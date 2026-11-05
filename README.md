@@ -110,3 +110,7 @@ The app and the MCP server are published self-contained into one folder and shar
 - Put the Partner Center identity in `package/identity.json`.
 - Review the licences of the bundled packages (MSAL is MIT; check the `Microsoft.SharePointOnline.CSOM` licence terms for redistribution) and add a notices file.
 - Add a privacy policy URL. The app sends data only to Microsoft Entra ID and the user's SharePoint tenant.
+
+## License
+
+[MIT](LICENSE)

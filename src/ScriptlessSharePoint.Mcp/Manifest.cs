@@ -19,6 +19,8 @@ public static class Manifest
         ["long_description"] =
             "Lets AI apps search the SharePoint Online sites of your tenant, check whether a site collection has its own app catalog, and enable or remove one, without PowerShell. It signs in with the connections you set up in the Scriptless SharePoint app: your Windows account, another account, an app with a certificate, or an access token.",
         ["author"] = new JsonObject { ["name"] = AppInfo.Name },
+        ["repository"] = new JsonObject { ["type"] = "git", ["url"] = "https://github.com/thenail/scriptlesssharepoint" },
+        ["license"] = "MIT",
         ["icon"] = "icon.png",
         ["keywords"] = new JsonArray("sharepoint", "microsoft 365", "app catalog", "spfx", "admin"),
         ["server"] = new JsonObject

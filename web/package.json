@@ -1,6 +1,7 @@
 {
   "name": "scriptless-sharepoint-web",
   "private": true,
+  "license": "MIT",
   "version": "0.1.0",
   "description": "The Scriptless SharePoint UI: React and Fluent UI, hosted in WebView2 by src/ScriptlessSharePoint.",
   "type": "module",

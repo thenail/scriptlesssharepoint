@@ -1,0 +1,7 @@
+# LF in the repository and in every checkout, whatever core.autocrlf says
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
+*.pfx binary
+*.cer binary
