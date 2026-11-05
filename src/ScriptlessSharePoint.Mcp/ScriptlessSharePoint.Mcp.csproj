@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- scriptless-sharepoint-mcp: the local MCP server on stdio. AI apps start it
+       themselves (Claude Desktop, Claude Code, VS Code, Windows' agent registry);
+       in the Store package it's an app execution alias. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>scriptless-sharepoint-mcp</AssemblyName>
+    <RootNamespace>ScriptlessSharePoint.Mcp</RootNamespace>
+    <ApplicationIcon>..\ScriptlessSharePoint\Assets\app.ico</ApplicationIcon>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <!-- not for UI: the same runtime profile as the app's, so the two share one
+         package folder (package/build.ps1) without different copies of a file -->
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ScriptlessSharePoint.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ScriptlessSharePoint.Core\ScriptlessSharePoint.Core.csproj" />
+  </ItemGroup>
+
+</Project>

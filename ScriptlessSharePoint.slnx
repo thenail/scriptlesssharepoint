@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ScriptlessSharePoint.Core/ScriptlessSharePoint.Core.csproj" />
+    <Project Path="src/ScriptlessSharePoint.Mcp/ScriptlessSharePoint.Mcp.csproj" />
+    <Project Path="src/ScriptlessSharePoint/ScriptlessSharePoint.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ScriptlessSharePoint.Tests/ScriptlessSharePoint.Tests.csproj" />
+  </Folder>
+</Solution>

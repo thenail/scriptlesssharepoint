@@ -1,0 +1,27 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Connections, sign-in (MSAL) and the SharePoint operations (CSOM), shared
+       by the app (ScriptlessSharePoint) and the MCP server (scriptless-sharepoint-mcp). -->
+  <PropertyGroup>
+    <RootNamespace>ScriptlessSharePoint</RootNamespace>
+    <!-- The built-in Entra app registration (multi-tenant public client) that
+         connections use when they don't bring their own app ID. Override with
+         dotnet build -p:SspClientId=<guid>, package/identity.json's clientId
+         or SSP_CLIENT_ID. -->
+    <SspClientId Condition="'$(SspClientId)' == ''">17316cc6-b7c2-40a2-90c7-a7b76e7f2758</SspClientId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="SspClientId" Value="$(SspClientId)" />
+    <InternalsVisibleTo Include="ScriptlessSharePoint.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Identity.Client" Version="4.92.0" />
+    <PackageReference Include="Microsoft.Identity.Client.Broker" Version="4.92.0" />
+    <PackageReference Include="Microsoft.Identity.Client.Extensions.Msal" Version="4.92.0" />
+    <PackageReference Include="Microsoft.SharePointOnline.CSOM" Version="16.1.27709.12000" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.14" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,8 @@
+{
+  "//": "The package identity. These are local-test values; for the Store, set them to Partner Center's Product identity (Package/Identity/Name, Package/Identity/Publisher, Package/Properties/PublisherDisplayName), here or in SSP_STORE_NAME, SSP_STORE_PUBLISHER and SSP_STORE_PUBLISHER_NAME.",
+  "name": "ScriptlessSharePoint.Local",
+  "publisher": "CN=Scriptless SharePoint Local Test",
+  "publisherName": "Scriptless SharePoint (local test)",
+  "///": "clientId: overrides the built-in Entra app registration (multi-tenant public client) set in src/ScriptlessSharePoint.Core/ScriptlessSharePoint.Core.csproj (SspClientId); or SSP_CLIENT_ID. Empty: use that one.",
+  "clientId": ""
+}

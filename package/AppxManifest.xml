@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Microsoft Store package, filled in by build.ps1: {{NAME}}, {{PUBLISHER}}
+  and {{PUBLISHER_NAME}} are the Partner Center product identity
+  (identity.json), {{VERSION}} is Directory.Build.props' Version.
+
+  Two applications: Scriptless SharePoint (the app; `scriptless-sharepoint` on
+  the command line) and the MCP server (no Start entry;
+  `scriptless-sharepoint-mcp` on the command line for Claude Desktop, Claude
+  Code, VS Code…, and registered with Windows' on-device agent registry through
+  the com.microsoft.windows.ai.mcpServer extension, which reads mcp\manifest.json).
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:trustedlaunch="http://schemas.microsoft.com/appx/manifest/trustedlaunch/windows10"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 uap5 uap10 trustedlaunch desktop4 rescap">
+
+  <Identity Name="{{NAME}}" Publisher="{{PUBLISHER}}" Version="{{VERSION}}" ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Scriptless SharePoint</DisplayName>
+    <PublisherDisplayName>{{PUBLISHER_NAME}}</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>Manage SharePoint Online without PowerShell: find sites and enable site collection app catalogs, here or from AI apps through its MCP server.</Description>
+    <!-- the agent registry (mcpServer extension) needs Trusted Launch: only
+         the package's own signed executables run under its identity -->
+    <trustedlaunch:TrustedLaunch>true</trustedlaunch:TrustedLaunch>
+    <uap10:PackageIntegrity>
+      <uap10:Content Enforcement="on" />
+    </uap10:PackageIntegrity>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="ScriptlessSharePoint" Executable="ScriptlessSharePoint.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Scriptless SharePoint"
+        Description="Manage SharePoint Online without PowerShell."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile
+          Wide310x150Logo="Assets\Wide310x150Logo.png"
+          Square71x71Logo="Assets\SmallTile.png"
+          Square310x310Logo="Assets\LargeTile.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <uap5:Extension Category="windows.appExecutionAlias">
+          <uap5:AppExecutionAlias>
+            <uap5:ExecutionAlias Alias="scriptless-sharepoint.exe" />
+          </uap5:AppExecutionAlias>
+        </uap5:Extension>
+      </Extensions>
+    </Application>
+
+    <Application
+      Id="McpServer"
+      Executable="scriptless-sharepoint-mcp.exe"
+      EntryPoint="Windows.FullTrustApplication"
+      desktop4:Subsystem="console"
+      desktop4:SupportsMultipleInstances="true">
+      <uap:VisualElements
+        AppListEntry="none"
+        DisplayName="Scriptless SharePoint MCP server"
+        Description="Lets AI apps find SharePoint Online sites and enable site collection app catalogs."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <uap5:Extension Category="windows.appExecutionAlias">
+          <uap5:AppExecutionAlias desktop4:Subsystem="console">
+            <uap5:ExecutionAlias Alias="scriptless-sharepoint-mcp.exe" />
+          </uap5:AppExecutionAlias>
+        </uap5:Extension>
+        <uap3:Extension Category="windows.appExtension">
+          <uap3:AppExtension
+            Name="com.microsoft.windows.ai.mcpServer"
+            Id="scriptless-sharepoint"
+            DisplayName="Scriptless SharePoint"
+            Description="Find SharePoint Online sites and enable site collection app catalogs."
+            PublicFolder="mcp">
+            <uap3:Properties>
+              <Registration>manifest.json</Registration>
+            </uap3:Properties>
+          </uap3:AppExtension>
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <!-- SharePoint Online and Entra sign-in, also for the MCP server when
+         Windows runs it contained in an agent session -->
+    <Capability Name="internetClient" />
+  </Capabilities>
+</Package>

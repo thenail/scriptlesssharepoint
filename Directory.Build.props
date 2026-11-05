@@ -1,0 +1,15 @@
+<Project>
+  <!-- Shared by every project. The version is the package's too (package/build.ps1). -->
+  <PropertyGroup>
+    <Version>0.1.0</Version>
+    <Product>Scriptless SharePoint</Product>
+    <Company>Scriptless SharePoint</Company>
+    <Copyright>Copyright © Scriptless SharePoint</Copyright>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>
