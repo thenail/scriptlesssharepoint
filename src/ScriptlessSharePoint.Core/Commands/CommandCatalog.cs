@@ -37,6 +37,9 @@ public static partial class CommandCatalog
         "Details",
         "Create",
         "Content",
+        "Pages",
+        "Columns and content types",
+        "Term store",
         "Versions",
         "Settings",
         "Sharing",
@@ -64,6 +67,11 @@ public static partial class CommandCatalog
         .. Permissions(),
         .. ListCommands(),
         .. ContentCommands(),
+        .. PageCommands(),
+        .. ColumnCommands(),
+        .. AppCommands(),
+        .. SharingCommands(),
+        .. TermCommands(),
     ]);
 
     public static IReadOnlyList<Command> All => all.Value;

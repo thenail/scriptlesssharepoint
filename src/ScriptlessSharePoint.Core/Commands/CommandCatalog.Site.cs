@@ -388,6 +388,104 @@ public static partial class CommandCatalog
             }, c.Args["days"] is null ? "Follows the tenant's setting." : $"Guest access expires after {c.Args.Number("days"):N0} days."),
         };
 
+        yield return new Command
+        {
+            Id = "site.request-files",
+            Title = "\"Request files\" links",
+            Group = "Sharing",
+            Description = "Whether people can make links that let others upload files to a folder without seeing what's in it.",
+            PowerShell = "Set-SPOSite -RequestFilesLinkEnabled",
+            Targets = Sites,
+            NeedsAdmin = true,
+            Glyph = "\uE898",
+            Parameters = [Toggle("allow", "Allow these links", true)],
+            Run = (c, n) => c.UpdateSiteAsync(n, p => p.RequestFilesLinkEnabled = c.Args.Toggle("allow"),
+                c.Args.Toggle("allow") ? "Request files links allowed." : "Request files links turned off."),
+        };
+
+        yield return new Command
+        {
+            Id = "site.block-download",
+            Title = "Block downloads",
+            Group = "Sharing",
+            Description = "Lets people only view files in the browser in these sites: no downloading, printing or syncing. Site owners can be left out.",
+            PowerShell = "Set-SPOSite -BlockDownloadPolicy -ExcludeBlockDownloadPolicySiteOwners",
+            Targets = Sites,
+            NeedsAdmin = true,
+            Glyph = "\uE896",
+            Parameters =
+            [
+                Toggle("block", "Block downloads", false),
+                Toggle("owners", "Except for the site's owners", true) with { ShowIf = new ShowIf("block", "true") },
+            ],
+            Run = (c, n) => c.UpdateSiteAsync(n, p =>
+            {
+                p.BlockDownloadPolicy = c.Args.Toggle("block");
+                if (c.Args.Toggle("block"))
+                {
+                    p.ExcludeBlockDownloadPolicySiteOwners = c.Args.Toggle("owners");
+                }
+            }, c.Args.Toggle("block") ? "Downloads blocked." : "Downloads allowed."),
+        };
+
+        yield return new Command
+        {
+            Id = "site.users",
+            Title = "List users",
+            Group = "Details",
+            Description = "Everyone the site collection knows: people who have been given access or have visited, guests marked.",
+            PowerShell = "Get-SPOUser",
+            Targets = Sites,
+            ReadOnly = true,
+            Glyph = "\uE716",
+            Run = async (c, n) =>
+            {
+                using var ctx = await c.SiteAsync(n).ConfigureAwait(false);
+                var users = ctx.Web.SiteUsers;
+                ctx.Load(users, us => us.Include(u => u.Title, u => u.Email, u => u.LoginName, u => u.IsSiteAdmin, u => u.PrincipalType, u => u.IsHiddenInUI));
+                await ctx.RunAsync().ConfigureAwait(false);
+                var people = users.ToList().Where(u => u.PrincipalType == Microsoft.SharePoint.Client.Utilities.PrincipalType.User && !u.IsHiddenInUI)
+                    .OrderBy(u => u.Title, StringComparer.CurrentCultureIgnoreCase)
+                    .ToList();
+                var guests = people.Count(u => u.LoginName.Contains("#ext#", StringComparison.OrdinalIgnoreCase));
+                return CommandResult.Done($"{Plural(people.Count, "person", "people")}{(guests > 0 ? $", {guests} of them guests" : "")}.", string.Join(Environment.NewLine, people.Select(u =>
+                    $"{u.Title}  ·  {(string.IsNullOrEmpty(u.Email) ? u.LoginName : u.Email)}" +
+                    (u.IsSiteAdmin ? "  ·  administrator" : "") +
+                    (u.LoginName.Contains("#ext#", StringComparison.OrdinalIgnoreCase) ? "  ·  guest" : ""))));
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "site.user-remove",
+            Title = "Remove someone from the site collection",
+            Group = "Permissions",
+            Description = "Takes a person out of the site collection: out of its groups, and every permission given to them directly.",
+            PowerShell = "Remove-SPOUser",
+            Targets = Sites,
+            Destructive = true,
+            Glyph = "\uE8AB",
+            Parameters = [Person("Person", "Their email address or user name.")],
+            Run = async (c, n) =>
+            {
+                var who = c.Args.Text("who").Trim();
+                using var ctx = await c.SiteAsync(n).ConfigureAwait(false);
+                var user = who.Contains('@') && !who.Contains('|') ? ctx.Web.SiteUsers.GetByEmail(who) : ctx.Web.SiteUsers.GetByLoginName(who);
+                ctx.Load(user, u => u.Id, u => u.Title);
+                try
+                {
+                    await ctx.RunAsync().ConfigureAwait(false);
+                }
+                catch (ServerException)
+                {
+                    return CommandResult.Skipped($"{who} isn't one of its users.");
+                }
+                ctx.Web.SiteUsers.RemoveById(user.Id);
+                await ctx.RunAsync().ConfigureAwait(false);
+                return CommandResult.Done($"Removed {user.Title}.");
+            },
+        };
+
         // ---- administrators ----
 
         yield return new Command
@@ -447,6 +545,47 @@ public static partial class CommandCatalog
                 await ctx.RunAsync().ConfigureAwait(false);
                 var list = admins.Select(u => $"{u.Title}  ·  {(string.IsNullOrEmpty(u.Email) ? u.LoginName : u.Email)}").ToList();
                 return CommandResult.Done($"{list.Count} administrators.", string.Join(Environment.NewLine, list));
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "site.restricted-search",
+            Title = "Restricted content discovery",
+            Group = "Search",
+            Description = "Leaves the site's content out of organisation-wide search and Copilot's suggestions. People with access still find it in the site, and in search of what they've used.",
+            PowerShell = "Set-SPOSite -RestrictContentOrgWideSearch",
+            Targets = Sites,
+            NeedsAdmin = true,
+            Glyph = "\uE721",
+            Parameters = [Toggle("restrict", "Leave it out of organisation-wide search", false)],
+            Run = (c, n) => c.UpdateSiteAsync(n, p => p.RestrictContentOrgWideSearch = c.Args.Toggle("restrict"),
+                c.Args.Toggle("restrict") ? "Left out of organisation-wide search." : "In organisation-wide search."),
+        };
+
+        yield return new Command
+        {
+            Id = "site.archive",
+            Title = "Archive or reactivate",
+            Group = "Settings",
+            Description = "Archives each site collection with Microsoft 365 Archive (people lose access, the content stays, at archive prices), or reactivates it. Reactivating a site archived for over 7 days takes time and can cost.",
+            PowerShell = "Set-SPOSiteArchiveState",
+            Targets = Sites,
+            NeedsAdmin = true,
+            Destructive = true,
+            Glyph = "\uE7B8",
+            Parameters = [new("state", "Make it", ParameterKind.Choice) { Default = "archive", Choices = [new("archive", "Archived"), new("active", "Active again")] }],
+            Run = async (c, n) =>
+            {
+                using var ctx = await c.AdminAsync().ConfigureAwait(false);
+                var tenant = new Tenant(ctx);
+                var archive = c.Args.Text("state") == "archive";
+                var url = n.SiteUrl ?? n.Url;
+                var op = archive ? tenant.ArchiveSiteByUrl(url) : tenant.UnarchiveSiteByUrl(url);
+                ctx.Load(op, o => o.IsComplete, o => o.PollingInterval);
+                await ctx.RunAsync().ConfigureAwait(false);
+                await Csom.WaitAsync(ctx, op, c.Cancellation).ConfigureAwait(false);
+                return CommandResult.Done(archive ? "Archived." : "Reactivated.");
             },
         };
 
@@ -607,6 +746,53 @@ public static partial class CommandCatalog
                 ctx.Site.RecycleBin.DeleteAll();
                 await ctx.RunAsync().ConfigureAwait(false);
                 return CommandResult.Done("Emptied the recycle bin.");
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "site.recycle-list",
+            Title = "Show the recycle bin",
+            Group = "Recycle bin",
+            Description = "What's in each site collection's recycle bins, newest first: the first 500.",
+            PowerShell = "Get-PnPRecycleBinItem",
+            Targets = Sites,
+            ReadOnly = true,
+            Glyph = "\uE81C",
+            Run = async (c, n) =>
+            {
+                const int limit = 500;
+                using var ctx = await c.SiteAsync(n).ConfigureAwait(false);
+                var items = ctx.Site.GetRecycleBinItems(null, limit, false, RecycleBinOrderBy.DeletedDate, RecycleBinItemState.None);
+                ctx.Load(items, xs => xs.Include(i => i.Title, i => i.DirName, i => i.DeletedByName, i => i.DeletedDate, i => i.Size, i => i.ItemState));
+                await ctx.RunAsync().ConfigureAwait(false);
+                if (items.Count == 0)
+                {
+                    return CommandResult.Done("The recycle bin is empty.");
+                }
+                var size = items.ToList().Sum(i => i.Size);
+                return CommandResult.Done($"{(items.Count == limit ? "The newest " : "")}{Plural(items.Count, "item", "items")}, {Csom.Size(size)}.", string.Join(Environment.NewLine, items.ToList().Select(i =>
+                    $"{i.Title}  ·  /{i.DirName}  ·  {i.DeletedDate.ToLocalTime():g} by {i.DeletedByName}  ·  {Csom.Size(i.Size)}" +
+                    (i.ItemState == RecycleBinItemState.SecondStageRecycleBin ? "  ·  second stage" : ""))));
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "site.recycle-purge-second",
+            Title = "Empty the second-stage recycle bin",
+            Group = "Recycle bin",
+            Description = "Deletes for good what's in each site collection's second-stage recycle bin (what was deleted from the first). The first stage stays.",
+            PowerShell = "Clear-PnPRecycleBinItem -SecondStageOnly",
+            Targets = Sites,
+            Destructive = true,
+            Glyph = "\uE74D",
+            Run = async (c, n) =>
+            {
+                using var ctx = await c.SiteAsync(n).ConfigureAwait(false);
+                ctx.Site.RecycleBin.DeleteAllSecondStageItems();
+                await ctx.RunAsync().ConfigureAwait(false);
+                return CommandResult.Done("Emptied the second stage.");
             },
         };
 

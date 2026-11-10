@@ -162,6 +162,14 @@ public sealed class CommandCatalogTests
     public void Home_pages_are_taken_within_the_site(string typed, string page) =>
         Assert.Equal(page, CommandCatalog.WithinWeb("https://contoso.sharepoint.com/sites/hr", typed));
 
+    [Theory]
+    [InlineData("fabrikam.com", "fabrikam.com")]
+    [InlineData("fabrikam.com\r\nwoodgrove.com", "fabrikam.com woodgrove.com")]
+    [InlineData(" fabrikam.com, woodgrove.com ;tailspin.com ", "fabrikam.com woodgrove.com tailspin.com")]
+    [InlineData(null, "")]
+    public void Domains_are_separated_by_spaces(string? typed, string domains) =>
+        Assert.Equal(domains, CommandCatalog.Domains(typed));
+
     [Fact]
     public void Label_ids_are_guids_or_nothing()
     {

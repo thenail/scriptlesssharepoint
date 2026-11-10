@@ -306,7 +306,7 @@ public static partial class CommandCatalog
                 ctx.Load(file, f => f.UIVersionLabel);
                 ctx.Load(file.Versions, vs => vs.Include(v => v.VersionLabel, v => v.Created, v => v.CreatedBy.Title, v => v.Size, v => v.CheckInComment));
                 await ctx.RunAsync().ConfigureAwait(false);
-                var lines = file.Versions.Reverse().Select(v =>
+                var lines = file.Versions.ToList().AsEnumerable().Reverse().Select(v =>
                     $"{v.VersionLabel}  ·  {v.Created.ToLocalTime():g}  ·  {v.CreatedBy.Title}  ·  {Csom.Size(v.Size)}{(string.IsNullOrWhiteSpace(v.CheckInComment) ? "" : $"  ·  {v.CheckInComment}")}");
                 return CommandResult.Done($"Version {file.UIVersionLabel}, {Plural(file.Versions.Count, "earlier one", "earlier ones")}.", string.Join(Environment.NewLine, lines));
             },
@@ -330,8 +330,8 @@ public static partial class CommandCatalog
                 await ctx.RunAsync().ConfigureAwait(false);
                 var wanted = c.Args["label"]?.Trim();
                 var version = wanted is null
-                    ? file.Versions.MaxBy(v => v.ID)
-                    : file.Versions.FirstOrDefault(v => v.VersionLabel == wanted);
+                    ? file.Versions.ToList().MaxBy(v => v.ID)
+                    : file.Versions.ToList().FirstOrDefault(v => v.VersionLabel == wanted);
                 if (version is null)
                 {
                     return CommandResult.Skipped(wanted is null ? "It has no earlier versions." : $"It has no version {wanted}.");
@@ -360,7 +360,7 @@ public static partial class CommandCatalog
                 var file = Csom.File(ctx, n);
                 ctx.Load(file.Versions, vs => vs.Include(v => v.ID));
                 await ctx.RunAsync().ConfigureAwait(false);
-                var old = file.Versions.OrderByDescending(v => v.ID).Skip(keep).ToList();
+                var old = file.Versions.ToList().OrderByDescending(v => v.ID).Skip(keep).ToList();
                 if (old.Count == 0)
                 {
                     return CommandResult.Skipped($"It has {Plural(file.Versions.Count, "earlier version", "earlier versions")}.");
@@ -371,6 +371,28 @@ public static partial class CommandCatalog
                 }
                 await ctx.RunAsync().ConfigureAwait(false);
                 return CommandResult.Done($"Moved {Plural(old.Count, "version", "versions")} to the recycle bin.");
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "content.stop-sharing",
+            Title = "Stop sharing",
+            Group = "Sharing",
+            Description = "Removes each file's or folder's sharing links, and the access people were given by sharing it. Permissions given otherwise stay.",
+            PowerShell = "Remove-PnPFileSharingLink, Remove-PnPFolderSharingLink",
+            Targets = FilesAndFolders,
+            Destructive = true,
+            Glyph = "\uE711",
+            Run = async (c, n) =>
+            {
+                using var ctx = await c.WebAsync(n).ConfigureAwait(false);
+                var result = Microsoft.SharePoint.Client.Web.UnshareObject(ctx, TenantUrls.Resource(n.WebUrl) + n.ServerRelativeUrl);
+                ctx.Load(result, r => r.StatusCode, r => r.ErrorMessage);
+                await ctx.RunAsync().ConfigureAwait(false);
+                return result.StatusCode.ToString() == "CompletedSuccessfully"
+                    ? CommandResult.Done("Stopped sharing it.")
+                    : CommandResult.Failed(string.IsNullOrEmpty(result.ErrorMessage) ? $"SharePoint said {result.StatusCode}." : result.ErrorMessage);
             },
         };
 

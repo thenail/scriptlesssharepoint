@@ -33,6 +33,19 @@ public static partial class CommandCatalog
         new(nameof(SharingPermissionType.Edit), "Edit"),
     ];
 
+    /// <summary>Changes tenant settings (Set-SPOTenant).</summary>
+    private static async Task<CommandResult> ChangeTenantAsync(CommandContext c, Action<Tenant> change, string done)
+    {
+        using var ctx = await c.AdminAsync().ConfigureAwait(false);
+        change(new Tenant(ctx));
+        await ctx.RunAsync().ConfigureAwait(false);
+        return CommandResult.Done(done);
+    }
+
+    /// <summary>Domains as typed (lines, spaces, commas) as SharePoint takes them: separated by spaces.</summary>
+    internal static string Domains(string? text) =>
+        string.Join(" ", (text ?? "").Split([' ', '\n', '\r', '\t', ',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+
     private static IEnumerable<Command> Tenant()
     {
         yield return new Command
@@ -280,6 +293,251 @@ public static partial class CommandCatalog
 
         yield return new Command
         {
+            Id = "tenant.domains",
+            Title = "Guests from some domains only",
+            Group = "Sharing",
+            Description = "Limits sharing with guests to some email domains, or blocks some, across the tenant.",
+            PowerShell = "Set-SPOTenant -SharingDomainRestrictionMode -SharingAllowedDomainList -SharingBlockedDomainList",
+            Targets = TenantOnly,
+            NeedsAdmin = true,
+            Glyph = "\uE774",
+            Parameters =
+            [
+                new("mode", "Guests", ParameterKind.Choice)
+                {
+                    Default = nameof(SharingDomainRestrictionModes.None),
+                    Choices = [
+                        new(nameof(SharingDomainRestrictionModes.None), "From any domain"),
+                        new(nameof(SharingDomainRestrictionModes.AllowList), "Only from these domains"),
+                        new(nameof(SharingDomainRestrictionModes.BlockList), "From any domain but these"),
+                    ],
+                },
+                new("domains", "Domains", ParameterKind.LongText)
+                {
+                    Placeholder = "fabrikam.com",
+                    Hint = "One per line, or separated by spaces.",
+                    ShowIf = new ShowIf("mode", nameof(SharingDomainRestrictionModes.AllowList), nameof(SharingDomainRestrictionModes.BlockList)),
+                },
+            ],
+            Run = (c, _) =>
+            {
+                var mode = c.Args.Enum<SharingDomainRestrictionModes>("mode");
+                var domains = Domains(c.Args["domains"]);
+                return ChangeTenantAsync(c, t =>
+                {
+                    t.SharingDomainRestrictionMode = mode;
+                    if (mode == SharingDomainRestrictionModes.AllowList)
+                    {
+                        t.SharingAllowedDomainList = domains;
+                    }
+                    else if (mode == SharingDomainRestrictionModes.BlockList)
+                    {
+                        t.SharingBlockedDomainList = domains;
+                    }
+                }, mode switch
+                {
+                    SharingDomainRestrictionModes.AllowList => $"Guests only from {domains}.",
+                    SharingDomainRestrictionModes.BlockList => $"Guests from anywhere but {domains}.",
+                    _ => "Guests from any domain.",
+                });
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "tenant.reshare",
+            Title = "Guests reshare",
+            Group = "Sharing",
+            Description = "Whether guests can share files and folders they don't own.",
+            PowerShell = "Set-SPOTenant -PreventExternalUsersFromResharing",
+            Targets = TenantOnly,
+            NeedsAdmin = true,
+            Glyph = "\uE72D",
+            Parameters = [Toggle("allow", "Guests can share what they don't own", true)],
+            Run = (c, _) => ChangeTenantAsync(c, t => t.PreventExternalUsersFromResharing = !c.Args.Toggle("allow"),
+                c.Args.Toggle("allow") ? "Guests can reshare." : "Guests can't reshare."),
+        };
+
+        yield return new Command
+        {
+            Id = "tenant.everyone",
+            Title = "\"Everyone\" in the people picker",
+            Group = "Sharing",
+            Description = "Whether people can pick Everyone, or Everyone except external users, when they share or give access.",
+            PowerShell = "Set-SPOTenant -ShowEveryoneClaim -ShowEveryoneExceptExternalUsersClaim",
+            Targets = TenantOnly,
+            NeedsAdmin = true,
+            Glyph = "\uE716",
+            Parameters =
+            [
+                Toggle("everyone", "Offer \"Everyone\" (guests included)", false),
+                Toggle("except", "Offer \"Everyone except external users\"", true),
+            ],
+            Run = (c, _) => ChangeTenantAsync(c, t =>
+            {
+                t.ShowEveryoneClaim = c.Args.Toggle("everyone");
+                t.ShowEveryoneExceptExternalUsersClaim = c.Args.Toggle("except");
+            }, "Changed the people picker."),
+        };
+
+        yield return new Command
+        {
+            Id = "tenant.notifications",
+            Title = "Sharing emails to owners",
+            Group = "Sharing",
+            Description = "Which sharing events owners of OneDrive and sites are told about by email.",
+            PowerShell = "Set-SPOTenant -NotifyOwnersWhenItemsReshared -NotifyOwnersWhenInvitationsAccepted -OwnerAnonymousNotification",
+            Targets = TenantOnly,
+            NeedsAdmin = true,
+            Glyph = "\uE715",
+            Parameters =
+            [
+                Toggle("reshared", "When someone reshares their files", true),
+                Toggle("accepted", "When a guest accepts an invitation", true),
+                Toggle("anyone", "When someone makes an \"Anyone\" link", true),
+            ],
+            Run = (c, _) => ChangeTenantAsync(c, t =>
+            {
+                t.NotifyOwnersWhenItemsReshared = c.Args.Toggle("reshared");
+                t.NotifyOwnersWhenInvitationsAccepted = c.Args.Toggle("accepted");
+                t.OwnerAnonymousNotification = c.Args.Toggle("anyone");
+            }, "Changed the emails to owners."),
+        };
+
+        yield return new Command
+        {
+            Id = "tenant.site-creation",
+            Title = "People create sites",
+            Group = "Settings",
+            Description = "Whether people can create sites themselves, from SharePoint's start page and OneDrive.",
+            PowerShell = "Set-SPOTenant -SelfServiceSiteCreationDisabled",
+            Targets = TenantOnly,
+            NeedsAdmin = true,
+            Glyph = "\uE710",
+            Parameters = [Toggle("allow", "Allow people to create sites", true)],
+            Run = (c, _) => ChangeTenantAsync(c, t => t.SelfServiceSiteCreationDisabled = !c.Args.Toggle("allow"),
+                c.Args.Toggle("allow") ? "People can create sites." : "Only administrators create sites."),
+        };
+
+        yield return new Command
+        {
+            Id = "tenant.unmanaged",
+            Title = "Access from unmanaged devices",
+            Group = "Settings",
+            Description = "Full access, web-only access (no downloading, printing or syncing), or none, for devices Conditional Access doesn't manage, across the tenant.",
+            PowerShell = "Set-SPOTenant -ConditionalAccessPolicy",
+            Targets = TenantOnly,
+            NeedsAdmin = true,
+            Glyph = "\uE8EA",
+            Parameters =
+            [
+                new("policy", "Unmanaged devices get", ParameterKind.Choice)
+                {
+                    Default = nameof(SPOConditionalAccessPolicyType.AllowFullAccess),
+                    Choices =
+                    [
+                        new(nameof(SPOConditionalAccessPolicyType.AllowFullAccess), "Full access"),
+                        new(nameof(SPOConditionalAccessPolicyType.AllowLimitedAccess), "Limited, web-only access"),
+                        new(nameof(SPOConditionalAccessPolicyType.BlockAccess), "No access"),
+                    ],
+                },
+            ],
+            Run = (c, _) => ChangeTenantAsync(c, t => t.ConditionalAccessPolicy = c.Args.Enum<SPOConditionalAccessPolicyType>("policy"),
+                "Changed access from unmanaged devices."),
+        };
+
+        yield return new Command
+        {
+            Id = "tenant.home-site",
+            Title = "Home site",
+            Group = "Settings",
+            Description = "The communication site that's the intranet's front page (the SharePoint app bar's home). Empty takes it away.",
+            PowerShell = "Set-SPOHomeSite, Remove-SPOHomeSite",
+            Targets = TenantOnly,
+            NeedsAdmin = true,
+            Glyph = "\uE80F",
+            Parameters = [new("url", "Site address", ParameterKind.Url) { Required = false, Placeholder = "https://contoso.sharepoint.com/sites/intranet" }],
+            Run = async (c, _) =>
+            {
+                using var ctx = await c.AdminAsync().ConfigureAwait(false);
+                var tenant = new Tenant(ctx);
+                if (c.Args["url"] is { } url)
+                {
+                    tenant.SetSPHSite(url.TrimEnd('/'));
+                }
+                else
+                {
+                    tenant.RemoveSPHSite();
+                }
+                await ctx.RunAsync().ConfigureAwait(false);
+                return CommandResult.Done(c.Args["url"] is { } u ? $"{u} is the home site." : "No home site now.");
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "tenant.onedrive-quota",
+            Title = "OneDrive storage",
+            Group = "Settings",
+            Description = "How much each new OneDrive may store. Existing ones keep theirs.",
+            PowerShell = "Set-SPOTenant -OneDriveStorageQuota",
+            Targets = TenantOnly,
+            NeedsAdmin = true,
+            Glyph = "\uEDA2",
+            Parameters = [new("mb", "Limit (MB)", ParameterKind.Number) { Default = "1048576", Min = 1024, Max = 25L * 1024 * 1024, Hint = "1048576 is 1 TB; 5242880 is 5 TB." }],
+            Run = (c, _) => ChangeTenantAsync(c, t => t.OneDriveStorageQuota = c.Args.Number("mb"), $"New OneDrives get {c.Args.Number("mb"):N0} MB."),
+        };
+
+        yield return new Command
+        {
+            Id = "tenant.site-designs",
+            Title = "List site designs",
+            Group = "Details",
+            Description = "The tenant's site designs (site templates), with their IDs for Apply a site design.",
+            PowerShell = "Get-SPOSiteDesign",
+            Targets = TenantOnly,
+            NeedsAdmin = true,
+            ReadOnly = true,
+            Glyph = "\uE771",
+            Run = async (c, _) =>
+            {
+                using var ctx = await c.AdminAsync().ConfigureAwait(false);
+                var designs = new Tenant(ctx).GetSiteDesigns();
+                ctx.Load(designs);
+                await ctx.RunAsync().ConfigureAwait(false);
+                return designs.Count == 0
+                    ? CommandResult.Done("The tenant has no site designs of its own.")
+                    : CommandResult.Done($"{designs.Count} site designs.", string.Join(Environment.NewLine, designs.ToList()
+                        .OrderBy(d => d.Title, StringComparer.CurrentCultureIgnoreCase)
+                        .Select(d => $"{d.Title}  ·  {d.Id}  ·  {(d.WebTemplate == "68" ? "communication site" : d.WebTemplate == "64" ? "team site" : d.WebTemplate)}")));
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "tenant.themes",
+            Title = "List themes",
+            Group = "Details",
+            Description = "The themes added to the tenant, by the names Theme takes.",
+            PowerShell = "Get-SPOTheme",
+            Targets = TenantOnly,
+            NeedsAdmin = true,
+            ReadOnly = true,
+            Glyph = "\uE790",
+            Run = async (c, _) =>
+            {
+                using var ctx = await c.AdminAsync().ConfigureAwait(false);
+                var themes = new Tenant(ctx).GetAllTenantThemes();
+                ctx.Load(themes);
+                await ctx.RunAsync().ConfigureAwait(false);
+                return themes.Count == 0
+                    ? CommandResult.Done("The tenant has no themes of its own.")
+                    : CommandResult.Done($"{themes.Count} themes.", string.Join(Environment.NewLine, themes.ToList().Select(t => t.Name).Order(StringComparer.CurrentCultureIgnoreCase)));
+            },
+        };
+
+        yield return new Command
+        {
             Id = "tenant.hubs",
             Title = "List hub sites",
             Group = "Hub sites",
@@ -298,7 +556,7 @@ public static partial class CommandCatalog
                 return hubs.Count == 0
                     ? CommandResult.Done("The tenant has no hub sites.")
                     : CommandResult.Done($"{hubs.Count} hub sites.", string.Join(Environment.NewLine,
-                        hubs.OrderBy(h => h.Title, StringComparer.CurrentCultureIgnoreCase).Select(h => $"{h.Title}  ·  {h.SiteUrl}")));
+                        hubs.ToList().OrderBy(h => h.Title, StringComparer.CurrentCultureIgnoreCase).Select(h => $"{h.Title}  ·  {h.SiteUrl}")));
             },
         };
     }

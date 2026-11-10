@@ -22,6 +22,9 @@ public static partial class CommandCatalog
         new("URL", "Hyperlink"),
     ];
 
+    /// <summary>For a setting a command can leave as it is.</summary>
+    private static readonly IReadOnlyList<Choice> KeepYesNo = [new("keep", "Leave as it is"), new("yes", "Yes"), new("no", "No")];
+
     private static IEnumerable<Command> ListCommands()
     {
         yield return new Command
@@ -82,7 +85,7 @@ public static partial class CommandCatalog
             "Set-PnPList -ForceCheckout", Libraries, "\uE8A5", "require", "Require check-out", false, (l, on) => l.ForceCheckout = on);
         yield return ListToggle("list.approval", "Content approval", "Versions", "Whether new and changed items stay drafts until someone approves them.",
             "Set-PnPList -EnableModeration", Lists, "\uE8FB", "on", "Require approval", false, (l, on) => l.EnableModeration = on);
-        yield return ListToggle("list.content-types", "Content types", "Settings", "Whether the list's content types can be managed.",
+        yield return ListToggle("list.content-types", "Content types", ColumnsGroup, "Whether the list's content types can be managed.",
             "Set-PnPList -EnableContentTypes", Lists, "\uE8EC", "on", "Allow management of content types", true, (l, on) => l.ContentTypesEnabled = on);
         yield return ListToggle("list.folders", "Folders", "Settings", "Whether the New menu offers folders.",
             "Set-PnPList -EnableFolderCreation", Lists, "\uE8F4", "on", "Allow new folders", true, (l, on) => l.EnableFolderCreation = on);
@@ -125,7 +128,7 @@ public static partial class CommandCatalog
         {
             Id = "list.add-column",
             Title = "Add a column",
-            Group = "Settings",
+            Group = ColumnsGroup,
             Description = "Adds a column to each list or library.",
             PowerShell = "Add-PnPField",
             Targets = Lists,
@@ -141,18 +144,7 @@ public static partial class CommandCatalog
             Run = async (c, n) =>
             {
                 var name = c.Args.Text("name");
-                var type = c.Args.Text("type");
-                var internalName = new string(name.Where(char.IsLetterOrDigit).ToArray());
-                if (internalName.Length == 0)
-                {
-                    internalName = "Column";
-                }
-                var choices = type == "Choice"
-                    ? "<CHOICES>" + string.Concat((c.Args["choices"] ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                        .Select(x => $"<CHOICE>{SecurityElement.Escape(x)}</CHOICE>")) + "</CHOICES>"
-                    : "";
-                var xml = $"<Field Type='{type}' DisplayName='{SecurityElement.Escape(name)}' Name='{internalName}' Required='{(c.Args.Toggle("required") ? "TRUE" : "FALSE")}'" +
-                          (type == "User" ? " UserSelectionMode='PeopleOnly'" : "") + $">{choices}</Field>";
+                var xml = FieldXml(name, c.Args.Text("type"), c.Args["choices"], c.Args.Toggle("required"));
                 using var ctx = await c.WebAsync(n).ConfigureAwait(false);
                 Csom.List(ctx, n).Fields.AddFieldAsXml(xml, c.Args.Toggle("view"), AddFieldOptions.AddFieldInternalNameHint | AddFieldOptions.AddFieldToDefaultView);
                 await ctx.RunAsync().ConfigureAwait(false);
@@ -164,7 +156,7 @@ public static partial class CommandCatalog
         {
             Id = "list.columns",
             Title = "List columns",
-            Group = "Details",
+            Group = ColumnsGroup,
             Description = "Each list's columns: the name shown, the internal name (for Set a column's value) and the type.",
             PowerShell = "Get-PnPField",
             Targets = Lists,
@@ -176,7 +168,7 @@ public static partial class CommandCatalog
                 var fields = Csom.List(ctx, n).Fields;
                 ctx.Load(fields, fs => fs.Include(f => f.Title, f => f.InternalName, f => f.TypeDisplayName, f => f.Hidden));
                 await ctx.RunAsync().ConfigureAwait(false);
-                var shown = fields.Where(f => !f.Hidden).OrderBy(f => f.Title, StringComparer.CurrentCultureIgnoreCase).ToList();
+                var shown = fields.ToList().Where(f => !f.Hidden).OrderBy(f => f.Title, StringComparer.CurrentCultureIgnoreCase).ToList();
                 return CommandResult.Done($"{shown.Count} columns.",
                     string.Join(Environment.NewLine, shown.Select(f => $"{f.Title}  ·  {f.InternalName}  ·  {f.TypeDisplayName}")));
             },
@@ -186,7 +178,7 @@ public static partial class CommandCatalog
         {
             Id = "list.delete-column",
             Title = "Delete a column",
-            Group = "Settings",
+            Group = ColumnsGroup,
             Description = "Deletes a column, and its values, from each list or library.",
             PowerShell = "Remove-PnPField",
             Targets = Lists,
@@ -323,6 +315,183 @@ public static partial class CommandCatalog
             Run = (c, n) => LabelId(c.Args["label"]) is not { } label
                 ? Task.FromResult(CommandResult.Failed("The label ID isn't a GUID."))
                 : ChangeListAsync(c, n, l => l.DefaultSensitivityLabelForLibrary = label, label.Length == 0 ? "Label taken off." : "Label set."),
+        };
+
+        yield return new Command
+        {
+            Id = "list.column-settings",
+            Title = "Change a column",
+            Group = ColumnsGroup,
+            Description = "Renames a column of each list, makes it required or not, and indexes it or not (an index lets lists over 5,000 items filter and sort by it).",
+            PowerShell = "Set-PnPField",
+            Targets = Lists,
+            Glyph = "\uE70F",
+            Parameters =
+            [
+                new("name", "Column", ParameterKind.Text) { Hint = "Its name as shown, or its internal name." },
+                new("title", "New name", ParameterKind.Text) { Required = false, Hint = "Empty keeps its name." },
+                new("required", "Required", ParameterKind.Choice) { Default = "keep", Choices = KeepYesNo },
+                new("indexed", "Indexed", ParameterKind.Choice) { Default = "keep", Choices = KeepYesNo },
+            ],
+            Run = async (c, n) =>
+            {
+                var name = c.Args.Text("name").Trim();
+                if (c.Args["title"] is null && c.Args.Text("required") == "keep" && c.Args.Text("indexed") == "keep")
+                {
+                    return CommandResult.Skipped("Nothing to change.");
+                }
+                using var ctx = await c.WebAsync(n).ConfigureAwait(false);
+                var field = Csom.List(ctx, n).Fields.GetByInternalNameOrTitle(name);
+                ctx.Load(field, f => f.Title);
+                try
+                {
+                    await ctx.RunAsync().ConfigureAwait(false);
+                }
+                catch (ServerException e) when (e.ServerErrorTypeName == "System.ArgumentException")
+                {
+                    return CommandResult.Skipped($"It has no column {name}.");
+                }
+                if (c.Args["title"] is { } title)
+                {
+                    field.Title = title.Trim();
+                }
+                if (c.Args.Text("required") != "keep")
+                {
+                    field.Required = c.Args.Text("required") == "yes";
+                }
+                if (c.Args.Text("indexed") != "keep")
+                {
+                    field.Indexed = c.Args.Text("indexed") == "yes";
+                }
+                field.Update();
+                await ctx.RunAsync().ConfigureAwait(false);
+                return CommandResult.Done($"Changed {field.Title}.");
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "list.views",
+            Title = "List views",
+            Group = "Details",
+            Description = "Each list's views, the default one marked.",
+            PowerShell = "Get-PnPView",
+            Targets = Lists,
+            ReadOnly = true,
+            Glyph = "\uE8A9",
+            Run = async (c, n) =>
+            {
+                using var ctx = await c.WebAsync(n).ConfigureAwait(false);
+                var views = Csom.List(ctx, n).Views;
+                ctx.Load(views, vs => vs.Include(v => v.Title, v => v.DefaultView, v => v.RowLimit, v => v.PersonalView, v => v.Hidden));
+                await ctx.RunAsync().ConfigureAwait(false);
+                var shown = views.ToList().Where(v => !v.Hidden && !string.IsNullOrEmpty(v.Title)).ToList();
+                return CommandResult.Done($"{Plural(shown.Count, "view", "views")}.", string.Join(Environment.NewLine, shown.Select(v =>
+                    $"{v.Title}{(v.DefaultView ? "  ·  default" : "")}{(v.PersonalView ? "  ·  personal" : "")}  ·  {v.RowLimit} a page")));
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "list.add-view",
+            Title = "Add a view",
+            Group = "Settings",
+            Description = "Adds a view to each list, with the columns given (or the default view's).",
+            PowerShell = "Add-PnPView",
+            Targets = Lists,
+            Glyph = "\uE710",
+            Parameters =
+            [
+                new("title", "Name", ParameterKind.Text),
+                new("fields", "Columns", ParameterKind.Text) { Required = false, Placeholder = "LinkTitle, Modified, Editor", Hint = "Internal names, separated by commas (List columns shows them). Empty: the default view's." },
+                new("rows", "Items a page", ParameterKind.Number) { Default = "30", Min = 1, Max = 5000 },
+                Toggle("default", "Make it the default view", false),
+            ],
+            Run = async (c, n) =>
+            {
+                using var ctx = await c.WebAsync(n).ConfigureAwait(false);
+                var list = Csom.List(ctx, n);
+                string[] fields;
+                if (c.Args["fields"] is { } typed)
+                {
+                    fields = typed.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                }
+                else
+                {
+                    var current = list.DefaultView.ViewFields;
+                    ctx.Load(current);
+                    await ctx.RunAsync().ConfigureAwait(false);
+                    fields = current.ToArray();
+                }
+                list.Views.Add(new ViewCreationInformation
+                {
+                    Title = c.Args.Text("title").Trim(),
+                    ViewFields = fields,
+                    RowLimit = (uint)c.Args.Number("rows"),
+                    Paged = true,
+                    SetAsDefaultView = c.Args.Toggle("default"),
+                    ViewTypeKind = ViewType.Html,
+                });
+                await ctx.RunAsync().ConfigureAwait(false);
+                return CommandResult.Done($"Added {c.Args.Text("title").Trim()}.");
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "list.content-type-list",
+            Title = "List content types",
+            Group = ColumnsGroup,
+            Description = "The content types each list uses.",
+            PowerShell = "Get-PnPContentType -List",
+            Targets = Lists,
+            ReadOnly = true,
+            Glyph = "\uE8EC",
+            Run = async (c, n) =>
+            {
+                using var ctx = await c.WebAsync(n).ConfigureAwait(false);
+                var types = Csom.List(ctx, n).ContentTypes;
+                ctx.Load(types, ts => ts.Include(t => t.Name, t => t.Hidden, t => t.StringId));
+                await ctx.RunAsync().ConfigureAwait(false);
+                var shown = types.ToList().Where(t => !t.Hidden).ToList();
+                return CommandResult.Done($"{Plural(shown.Count, "content type", "content types")}.",
+                    string.Join(Environment.NewLine, shown.Select(t => $"{t.Name}  ·  {t.StringId}")));
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "list.content-type-add",
+            Title = "Add a content type",
+            Group = ColumnsGroup,
+            Description = "Adds one of the site's content types to each list, turning on content types where they're off.",
+            PowerShell = "Add-PnPContentTypeToList",
+            Targets = Lists,
+            Glyph = "\uE710",
+            Parameters = [new("name", "Content type", ParameterKind.Text) { Placeholder = "Contract", Hint = "Its name, from the site's (or the hub's) content types." }],
+            Run = async (c, n) =>
+            {
+                var name = c.Args.Text("name").Trim();
+                using var ctx = await c.WebAsync(n).ConfigureAwait(false);
+                var list = Csom.List(ctx, n);
+                var available = ctx.Web.AvailableContentTypes;
+                ctx.Load(available, ts => ts.Include(t => t.Name));
+                ctx.Load(list.ContentTypes, ts => ts.Include(t => t.Name));
+                await ctx.RunAsync().ConfigureAwait(false);
+                if (list.ContentTypes.ToList().Any(t => string.Equals(t.Name, name, StringComparison.CurrentCultureIgnoreCase)))
+                {
+                    return CommandResult.Skipped($"It has {name} already.");
+                }
+                if (available.ToList().FirstOrDefault(t => string.Equals(t.Name, name, StringComparison.CurrentCultureIgnoreCase)) is not { } type)
+                {
+                    return CommandResult.Failed($"The site has no content type called {name}.");
+                }
+                list.ContentTypesEnabled = true;
+                list.Update();
+                list.ContentTypes.AddExistingContentType(type);
+                await ctx.RunAsync().ConfigureAwait(false);
+                return CommandResult.Done($"Added {type.Name}.");
+            },
         };
 
         yield return new Command

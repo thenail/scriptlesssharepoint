@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 
 using Microsoft.SharePoint.Client;
@@ -9,6 +10,17 @@ namespace ScriptlessSharePoint.Commands;
 /// <summary>Who has access to what: on sites, lists, folders, files and items alike.</summary>
 public static partial class CommandCatalog
 {
+    /// <summary>What a sharing link is, in words.</summary>
+    private static string LinkKind(SharingLinkKind kind) => kind switch
+    {
+        SharingLinkKind.AnonymousView => "anyone with the link can view",
+        SharingLinkKind.AnonymousEdit => "anyone with the link can edit",
+        SharingLinkKind.OrganizationView => "people in the organisation can view",
+        SharingLinkKind.OrganizationEdit => "people in the organisation can edit",
+        SharingLinkKind.Direct or SharingLinkKind.Flexible => "specific people",
+        _ => kind.ToString(),
+    };
+
     private static IEnumerable<Command> Permissions()
     {
         yield return new Command
@@ -71,6 +83,41 @@ public static partial class CommandCatalog
                     : p.Has(PermissionKind.ViewListItems) || p.Has(PermissionKind.ViewPages) ? "can view"
                     : "no access";
                 return CommandResult.Done($"{who}: {level}.");
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "perm.shared-with",
+            Title = "Who it's shared with",
+            Group = "Sharing",
+            Description = "The people each one is shared with, and its sharing links: who they work for, what they allow, and when they expire.",
+            PowerShell = "Get-PnPFileSharingLink, Get-PnPFolderSharingLink",
+            Targets = Securables,
+            ReadOnly = true,
+            Glyph = "\uE72D",
+            Run = async (c, n) =>
+            {
+                using var ctx = await c.WebAsync(n).ConfigureAwait(false);
+                var info = n.Kind is NodeKind.SiteCollection or NodeKind.Subsite
+                    ? ObjectSharingInformation.GetWebSharingInformation(ctx, false, true, false, true, true, false)
+                    : ObjectSharingInformation.GetObjectSharingInformation(ctx, Csom.Securable(ctx, n), false, true, false, true, true, false, false);
+                ctx.Load(info, i => i.SharedWithUsersCollection, i => i.SharingLinks);
+                await ctx.RunAsync().ConfigureAwait(false);
+                var text = new StringBuilder();
+                var people = info.SharedWithUsersCollection?.ToList() ?? [];
+                var links = info.SharingLinks?.Where(l => !string.IsNullOrEmpty(l.Url)).ToList() ?? [];
+                foreach (var u in people.OrderBy(u => u.Name, StringComparer.CurrentCultureIgnoreCase))
+                {
+                    var can = u.HasEditPermission ? "can edit" : u.HasReviewPermission ? "can review" : "can view";
+                    text.AppendLine($"{u.Name}{(string.IsNullOrEmpty(u.Email) ? "" : $" ({u.Email})")}  ·  {can}{(u.IsExternalUser ? "  ·  guest" : "")}");
+                }
+                foreach (var l in links)
+                {
+                    var expires = Convert.ToString(l.Expiration, CultureInfo.CurrentCulture);
+                    text.AppendLine($"Link: {LinkKind(l.LinkKind)}{(string.IsNullOrWhiteSpace(expires) ? "" : $", expires {expires}")}  ·  {l.Url}");
+                }
+                return CommandResult.Done($"{Plural(people.Count, "person", "people")}, {Plural(links.Count, "link", "links")}.", Join(text));
             },
         };
 

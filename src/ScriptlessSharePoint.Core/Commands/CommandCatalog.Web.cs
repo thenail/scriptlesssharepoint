@@ -408,7 +408,7 @@ public static partial class CommandCatalog
                 var nodes = Navigation(ctx, c.Args.Text("where"));
                 ctx.Load(nodes, ns => ns.Include(x => x.Title, x => x.Children.Include(y => y.Title)));
                 await ctx.RunAsync().ConfigureAwait(false);
-                var matches = nodes.Concat(nodes.SelectMany(x => x.Children))
+                var matches = nodes.ToList().Concat(nodes.ToList().SelectMany(x => x.Children.ToList()))
                     .Where(x => string.Equals(x.Title, title, StringComparison.CurrentCultureIgnoreCase))
                     .ToList();
                 if (matches.Count == 0)
@@ -464,7 +464,7 @@ public static partial class CommandCatalog
                     ctx.Load(zones, z => z.Include(x => x.Id, x => x.Description));
                     await ctx.RunAsync().ConfigureAwait(false);
                     var term = zone.Trim();
-                    var matches = zones.Where(z => z.Description.Contains(term, StringComparison.OrdinalIgnoreCase)).ToList();
+                    var matches = zones.ToList().Where(z => z.Description.Contains(term, StringComparison.OrdinalIgnoreCase)).ToList();
                     if (matches.Count != 1)
                     {
                         return CommandResult.Failed(matches.Count == 0
@@ -545,7 +545,7 @@ public static partial class CommandCatalog
                 ctx.Load(web, fs => fs.Include(f => f.DefinitionId, f => f.DisplayName));
                 ctx.Load(site, fs => fs.Include(f => f.DefinitionId, f => f.DisplayName));
                 await ctx.RunAsync().ConfigureAwait(false);
-                static string Lines(FeatureCollection fs) => string.Join(Environment.NewLine, fs
+                static string Lines(FeatureCollection fs) => string.Join(Environment.NewLine, fs.ToList()
                     .OrderBy(f => f.DisplayName, StringComparer.CurrentCultureIgnoreCase)
                     .Select(f => $"  {(string.IsNullOrEmpty(f.DisplayName) ? "(no name)" : f.DisplayName)}  ·  {f.DefinitionId}"));
                 return CommandResult.Done($"{web.Count} on the site, {site.Count} on the site collection.",
@@ -587,6 +587,95 @@ public static partial class CommandCatalog
                 ctx.Web.RoleAssignments.Add(group, new RoleDefinitionBindingCollection(ctx) { ctx.Web.RoleDefinitions.GetByType(Csom.Role(role)) });
                 await ctx.RunAsync().ConfigureAwait(false);
                 return CommandResult.Done($"Created {name} with {Csom.Roles.First(r => r.Value == role).Label.ToLowerInvariant()}.");
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "web.theme",
+            Title = "Theme",
+            Group = "Settings",
+            Description = "Applies one of the tenant's own themes to each site.",
+            PowerShell = "Set-SPOWebTheme",
+            Targets = Webs,
+            NeedsAdmin = true,
+            Glyph = "\uE790",
+            Parameters = [new("theme", "Theme", ParameterKind.Text) { Hint = "Its name, as List themes (on the tenant) shows it." }],
+            Run = async (c, n) =>
+            {
+                using var ctx = await c.AdminAsync().ConfigureAwait(false);
+                new Microsoft.Online.SharePoint.TenantAdministration.Tenant(ctx).SetWebTheme(c.Args.Text("theme").Trim(), n.WebUrl);
+                await ctx.RunAsync().ConfigureAwait(false);
+                return CommandResult.Done($"Applied {c.Args.Text("theme").Trim()}.");
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "web.site-design",
+            Title = "Apply a site design",
+            Group = "Apps and features",
+            Description = "Runs one of the tenant's site designs (site templates) on each site. SharePoint does it in the background, in a few minutes.",
+            PowerShell = "Add-SPOSiteDesignTask",
+            Targets = Webs,
+            NeedsAdmin = true,
+            Glyph = "\uE771",
+            Parameters = [new("design", "Site design ID", ParameterKind.Text) { Placeholder = "a1b2c3d4-…", Hint = "List site designs (on the tenant) shows the IDs." }],
+            Run = async (c, n) =>
+            {
+                if (!Guid.TryParse(c.Args.Text("design").Trim(), out var id))
+                {
+                    return CommandResult.Failed("The site design ID isn't a GUID.");
+                }
+                using var ctx = await c.AdminAsync().ConfigureAwait(false);
+                var task = Microsoft.Online.SharePoint.TenantAdministration.Tenant.AddSiteDesignTask(ctx, n.WebUrl, id);
+                ctx.Load(task);
+                await ctx.RunAsync().ConfigureAwait(false);
+                return CommandResult.Done("Queued: SharePoint applies it within a few minutes.");
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "web.offline",
+            Title = "Offline and sync",
+            Group = "Settings",
+            Description = "Whether the site's libraries can be synced with OneDrive and used offline (Search and offline availability).",
+            Targets = Webs,
+            Glyph = "\uE895",
+            Parameters = [Toggle("allow", "Allow sync and offline use", true)],
+            Run = (c, n) => ChangeWebAsync(c, n, w => w.ExcludeFromOfflineClient = !c.Args.Toggle("allow"),
+                c.Args.Toggle("allow") ? "Sync allowed." : "Sync turned off."),
+        };
+
+        yield return new Command
+        {
+            Id = "web.group-delete",
+            Title = "Delete a group",
+            Group = "Groups",
+            Description = "Deletes a SharePoint group from each site's site collection. Its members lose what the group gave them.",
+            PowerShell = "Remove-PnPGroup",
+            Targets = Webs,
+            Destructive = true,
+            Glyph = "\uE74D",
+            Parameters = [new("name", "Group", ParameterKind.Text) { Hint = "Its name, as Site permissions shows it." }],
+            Run = async (c, n) =>
+            {
+                var name = c.Args.Text("name").Trim();
+                using var ctx = await c.WebAsync(n).ConfigureAwait(false);
+                var group = ctx.Web.SiteGroups.GetByName(name);
+                ctx.Load(group, g => g.Id);
+                try
+                {
+                    await ctx.RunAsync().ConfigureAwait(false);
+                }
+                catch (ServerException)
+                {
+                    return CommandResult.Skipped($"It has no group called {name}.");
+                }
+                ctx.Web.SiteGroups.RemoveById(group.Id);
+                await ctx.RunAsync().ConfigureAwait(false);
+                return CommandResult.Done($"Deleted {name}.");
             },
         };
 
