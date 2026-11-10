@@ -694,17 +694,116 @@ public sealed partial class MainWindow
                         ? ("\uE946", "SystemFillColorAttentionBrush")
                         : ("\uE930", "SystemFillColorSuccessBrush");
             Set(Glyph(glyph, brush), r.Message);
-            if (r.Detail is { Length: > 0 } detail && text.Children.OfType<Border>().FirstOrDefault() is null)
+            if (text.Children.OfType<Border>().FirstOrDefault() is not null)
+            {
+                return;
+            }
+            var shown = r.Table is { Rows.Count: > 0 } table ? TableView(table)
+                : r.Detail is { Length: > 0 } detail ? DetailView(detail, error: !r.Ok)
+                : null;
+            if (shown is not null)
             {
                 text.Children.Add(new Border
                 {
                     Background = (Brush)Application.Current.Resources["SubtleFillColorSecondaryBrush"],
                     CornerRadius = new CornerRadius(4),
-                    Padding = new Thickness(8, 6, 8, 6),
+                    Padding = new Thickness(10, 8, 10, 8),
                     Margin = new Thickness(0, 4, 0, 0),
-                    Child = new TextBlock { Text = detail, Style = (Style)Application.Current.Resources["Code"] },
+                    Child = shown,
                 });
             }
+        }
+
+        /// <summary>How many of a report's rows the results show (Show as a table has them all).</summary>
+        private const int RowsShown = 6;
+
+        private static Style Res(string key) => (Style)Application.Current.Resources[key];
+
+        /// <summary>
+        /// A report in the results: one thing's details as names and values;
+        /// a list as a line per thing (its first value, the rest small under
+        /// it, each with its column's name on hover), the first few of it.
+        /// </summary>
+        private static FrameworkElement TableView(ReportTable table)
+        {
+            if (table.Rows.Count == 1 && table.Columns.Count >= 3)
+            {
+                return Pairs(table.Columns.Zip(table.Rows[0]).Select(x => (x.First, x.Second)));
+            }
+            var list = new StackPanel { Spacing = 6 };
+            foreach (var row in table.Rows.Take(RowsShown))
+            {
+                var cells = table.Columns.Zip(row).Where(x => x.Second.Length > 0).ToList();
+                if (cells.Count == 0)
+                {
+                    continue;
+                }
+                var item = new StackPanel();
+                item.Children.Add(new TextBlock { Text = cells[0].Second, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true });
+                if (cells.Count > 1)
+                {
+                    item.Children.Add(new TextBlock
+                    {
+                        // what's readable first, IDs last
+                        Text = string.Join(" · ", cells.Skip(1).OrderBy(c => IsId(c.First, c.Second) ? 1 : 0).Select(c => c.Second)),
+                        Style = Res("CaptionSecondary"),
+                        TextWrapping = TextWrapping.Wrap,
+                        IsTextSelectionEnabled = true,
+                    });
+                }
+                ToolTipService.SetToolTip(item, string.Join("\n", cells.Select(c => $"{c.First}: {c.Second}")));
+                list.Children.Add(item);
+            }
+            if (table.Rows.Count > RowsShown)
+            {
+                list.Children.Add(new TextBlock
+                {
+                    Text = $"…and {table.Rows.Count - RowsShown:N0} more. Show as a table has them all.",
+                    Style = Res("CaptionSecondary"),
+                    FontStyle = Windows.UI.Text.FontStyle.Italic,
+                });
+            }
+            return list;
+        }
+
+        /// <summary>An ID column, or a GUID: shown after what people read.</summary>
+        private static bool IsId(string column, string value) =>
+            column == "ID" || column.EndsWith(" ID", StringComparison.Ordinal) || Guid.TryParse(value, out _);
+
+        /// <summary>Names and their values, side by side.</summary>
+        private static Grid Pairs(IEnumerable<(string Name, string Value)> pairs)
+        {
+            var grid = new Grid { ColumnSpacing = 12, RowSpacing = 4 };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto, MaxWidth = 150 });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            foreach (var (name, value) in pairs.Where(p => p.Value.Length > 0))
+            {
+                grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                var label = new TextBlock { Text = name, Style = Res("CaptionSecondary"), TextWrapping = TextWrapping.Wrap };
+                var text = new TextBlock { Text = value, Style = Res("CaptionTextBlockStyle"), TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
+                Grid.SetRow(label, grid.RowDefinitions.Count - 1);
+                Grid.SetRow(text, grid.RowDefinitions.Count - 1);
+                Grid.SetColumn(text, 1);
+                grid.Children.Add(label);
+                grid.Children.Add(text);
+            }
+            return grid;
+        }
+
+        /// <summary>
+        /// Text a command gave (no table): "Name: value" lines side by side,
+        /// else as it is, in the text's own font (an error's in the code font).
+        /// </summary>
+        private static FrameworkElement DetailView(string detail, bool error)
+        {
+            var lines = detail.Split('\n').Select(l => l.TrimEnd('\r')).Where(l => l.Trim().Length > 0).ToList();
+            if (!error && lines.Count > 1 && lines.All(l => l.IndexOf(": ", StringComparison.Ordinal) is > 0 and < 40 && !l.StartsWith(' ')))
+            {
+                return Pairs(lines.Select(l => (l[..l.IndexOf(": ", StringComparison.Ordinal)], l[(l.IndexOf(": ", StringComparison.Ordinal) + 2)..])));
+            }
+            return error
+                ? new TextBlock { Text = detail, Style = Res("Code") }
+                : new TextBlock { Text = detail, Style = Res("CaptionTextBlockStyle"), TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true, LineHeight = 18 };
         }
 
         private static FontIcon Glyph(string glyph, string brush) => new()

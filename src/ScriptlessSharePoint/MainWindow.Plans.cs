@@ -1064,33 +1064,106 @@ public sealed partial class MainWindow
         OpenForm(c, PlanCheck.ArgsOf(c, step));
     }
 
-    /// <summary>"Add a step": the commands that can run where the plan has got to, by group.</summary>
+    /// <summary>
+    /// "Add a step": a box to find one by what it's called, what it does or
+    /// the PowerShell it stands in for, over the commands that can run where
+    /// the plan has got to, by group. Enter adds the first that matches.
+    /// </summary>
     private FrameworkElement AddStepButton(Plan plan)
     {
         IReadOnlySet<NodeKind> kinds = plan.Steps.Count == 0 && plan.StartsOn.Count == 0
             ? Enum.GetValues<NodeKind>().ToHashSet()
             : KindsBefore(plan, plan.Steps.Count);
-        var menu = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Bottom };
-        foreach (var group in CommandCatalog.All.Where(c => PlanCheck.RunsOn(c, kinds).Count > 0).GroupBy(c => c.Group))
+        var commands = CommandCatalog.All.Where(c => PlanCheck.RunsOn(c, kinds).Count > 0).ToList();
+
+        var flyout = new Flyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedLeft };
+        var find = new AutoSuggestBox { PlaceholderText = "Find a step", QueryIcon = new SymbolIcon(Symbol.Find), Margin = new Thickness(0, 0, 0, 8) };
+        var list = new StackPanel();
+        var scroll = new ScrollViewer { Content = list, MaxHeight = 420, Padding = new Thickness(0, 0, 12, 0) };
+        var panel = new StackPanel { Width = 340 };
+        panel.Children.Add(find);
+        panel.Children.Add(scroll);
+        flyout.Content = panel;
+
+        void Add(Command c)
         {
-            var sub = new MenuFlyoutSubItem { Text = group.Key };
-            foreach (var c in group)
-            {
-                var item = new MenuFlyoutItem { Text = c.Title, Icon = new FontIcon { Glyph = c.Glyph } };
-                ToolTipService.SetToolTip(item, c.Description);
-                item.Click += (_, _) =>
-                {
-                    editingStep = (plan, plan.Steps.Count, StepKind(c, kinds));
-                    OpenForm(c);
-                };
-                sub.Items.Add(item);
-            }
-            menu.Items.Add(sub);
+            flyout.Hide();
+            editingStep = (plan, plan.Steps.Count, StepKind(c, kinds));
+            OpenForm(c);
         }
+        List<Command> Matching()
+        {
+            var text = find.Text?.Trim() ?? "";
+            return commands.Where(c => text.Length == 0 ||
+                                       c.Title.Contains(text, StringComparison.CurrentCultureIgnoreCase) ||
+                                       c.Description.Contains(text, StringComparison.CurrentCultureIgnoreCase) ||
+                                       c.PowerShell?.Contains(text, StringComparison.OrdinalIgnoreCase) == true).ToList();
+        }
+        void Fill()
+        {
+            list.Children.Clear();
+            var shown = Matching();
+            if (shown.Count == 0)
+            {
+                list.Children.Add(new TextBlock
+                {
+                    Text = $"No step that can run here matches “{find.Text?.Trim()}”.",
+                    Style = (Style)Application.Current.Resources["CaptionSecondary"],
+                    Margin = new Thickness(4, 4, 4, 4),
+                });
+                return;
+            }
+            var critical = (Brush)Application.Current.Resources["SystemFillColorCriticalBrush"];
+            foreach (var group in shown.GroupBy(c => c.Group))
+            {
+                list.Children.Add(new TextBlock { Text = group.Key.ToUpper(System.Globalization.CultureInfo.CurrentCulture), Style = (Style)Application.Current.Resources["PaneGroupHeader"] });
+                foreach (var c in group)
+                {
+                    var row = new Grid { ColumnSpacing = 12 };
+                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                    var icon = new FontIcon { Glyph = c.Glyph, FontSize = 16, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 2, 0, 0) };
+                    if (c.Destructive)
+                    {
+                        icon.Foreground = critical;
+                    }
+                    row.Children.Add(icon);
+                    var text = new StackPanel();
+                    text.Children.Add(new TextBlock { Text = c.Title, TextWrapping = TextWrapping.Wrap });
+                    if (c.PowerShell is { } ps)
+                    {
+                        text.Children.Add(new TextBlock { Text = ps, Style = (Style)Application.Current.Resources["CaptionSecondary"], TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap });
+                    }
+                    Grid.SetColumn(text, 1);
+                    row.Children.Add(text);
+                    var button = new Button { Style = (Style)Application.Current.Resources["PaneCommand"], Content = row };
+                    ToolTipService.SetToolTip(button, c.Description);
+                    Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, c.Title);
+                    button.Click += (_, _) => Add(c);
+                    list.Children.Add(button);
+                }
+            }
+        }
+        find.TextChanged += (_, _) => Fill();
+        find.QuerySubmitted += (_, _) =>
+        {
+            if (Matching().FirstOrDefault() is { } first)
+            {
+                Add(first);
+            }
+        };
+        flyout.Opening += (_, _) =>
+        {
+            find.Text = "";
+            Fill();
+        };
+        flyout.Opened += (_, _) => find.Focus(FocusState.Programmatic);
+
         var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         content.Children.Add(new FontIcon { Glyph = "", FontSize = 14 });
         content.Children.Add(new TextBlock { Text = "Add a step" });
-        var button = new DropDownButton { Content = content, Flyout = menu, Margin = new Thickness(0, 4, 0, 0) };
+        var button = new DropDownButton { Content = content, Flyout = flyout, Margin = new Thickness(0, 4, 0, 0) };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, "Add a step");
         ToolTipService.SetToolTip(button, kinds.Count == 0
             ? "Commands for the tenant"
             : $"Commands for what's ticked by then: {string.Join(", ", kinds.Select(k => NodeKinds.Name(k, 2)))}");
@@ -1175,6 +1248,7 @@ public sealed partial class MainWindow
             grid.Children.Add(text);
             var button = new Button { Style = (Style)Application.Current.Resources["PaneCommand"], Content = grid };
             ToolTipService.SetToolTip(button, plan.Description ?? plan.Name);
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, $"Plan: {plan.Name}");
             button.Click += (_, _) =>
             {
                 planFromList = false;
