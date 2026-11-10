@@ -45,25 +45,147 @@ public sealed partial class SharePointClient
             })
             .OrderBy(n => n.Title, StringComparer.CurrentCultureIgnoreCase));
 
-        var visible = lists.Where(l => !l.Hidden).Select(l => new SpNode
-        {
-            Kind = l.BaseType == BaseType.DocumentLibrary ? NodeKind.Library : NodeKind.List,
-            Title = l.Title,
-            Url = resource + l.RootFolder.ServerRelativeUrl,
-            WebUrl = webUrl,
-            SiteUrl = siteUrl,
-            ListId = l.Id,
-            ServerRelativeUrl = l.RootFolder.ServerRelativeUrl,
-            InLibrary = l.BaseType == BaseType.DocumentLibrary,
-            Template = l.BaseTemplate.ToString(CultureInfo.InvariantCulture),
-            ItemCount = l.ItemCount,
-            Modified = Utc(l.LastItemModifiedDate),
-        });
+        var visible = lists.Where(l => !l.Hidden).Select(l => ListNode(l, siteUrl, webUrl, resource));
         nodes.AddRange(visible
             .OrderBy(n => n.Kind == NodeKind.Library ? 0 : 1)
             .ThenBy(n => n.Title, StringComparer.CurrentCultureIgnoreCase));
         return nodes;
     }, ct);
+
+    /// <summary>
+    /// A site's home page (the web's welcome page) and the library it's in, or
+    /// null when it has none that's a file in a library (a classic site's
+    /// default.aspx at the web's root).
+    /// </summary>
+    public Task<FoundNode?> GetHomePageAsync(SpNode web, CancellationToken ct = default) => RetryAsync<FoundNode?>(async () =>
+    {
+        using var ctx = await ContextAsync(web.WebUrl, ct).ConfigureAwait(false);
+        ctx.Load(ctx.Site, s => s.Url);
+        ctx.Load(ctx.Web, x => x.Url, x => x.ServerRelativeUrl, x => x.RootFolder.WelcomePage);
+        await ctx.ExecuteQueryAsync().ConfigureAwait(false);
+        var welcome = ctx.Web.RootFolder.WelcomePage?.Split('?', '#')[0].Trim('/');
+        return string.IsNullOrEmpty(welcome) ? null : await LocateAsync(ctx, welcome).ConfigureAwait(false);
+    }, ct);
+
+    /// <summary>
+    /// What's at an address in a site, from the site's own address
+    /// ("Shared Documents/Policies", "SitePages/Home.aspx", "Lists/Contacts"):
+    /// a file, a folder, or a list or library, with the row it's shown under.
+    /// Null when there's nothing there (or nothing in a list).
+    /// </summary>
+    public Task<FoundNode?> GetAtPathAsync(SpNode web, string path, CancellationToken ct = default) => RetryAsync<FoundNode?>(async () =>
+    {
+        using var ctx = await ContextAsync(web.WebUrl, ct).ConfigureAwait(false);
+        ctx.Load(ctx.Site, s => s.Url);
+        ctx.Load(ctx.Web, x => x.Url, x => x.ServerRelativeUrl);
+        await ctx.ExecuteQueryAsync().ConfigureAwait(false);
+        return await LocateAsync(ctx, path).ConfigureAwait(false);
+    }, ct);
+
+    /// <summary><see cref="GetAtPathAsync"/> in a context whose site URL and web URLs are loaded.</summary>
+    private static async Task<FoundNode?> LocateAsync(ClientContext ctx, string path)
+    {
+        var w = ctx.Web;
+        var siteUrl = ctx.Site.Url.TrimEnd('/');
+        var webUrl = w.Url.TrimEnd('/');
+        var resource = TenantUrls.Resource(webUrl);
+        var full = $"{w.ServerRelativeUrl.TrimEnd('/')}/{Uri.UnescapeDataString(path).Replace('\\', '/').Trim('/')}";
+
+        // a file
+        var file = w.GetFileByServerRelativePath(ResourcePath.FromDecodedUrl(full));
+        var fileItem = file.ListItemAllFields;
+        var fileList = fileItem.ParentList;
+        ctx.Load(file, f => f.Name, f => f.Title, f => f.Length, f => f.TimeLastModified, f => f.ServerRelativeUrl);
+        ctx.Load(fileItem, i => i.Id);
+        LoadList(ctx, fileList);
+        if (await TryAsync(ctx).ConfigureAwait(false) && fileItem.ServerObjectIsNull != true && fileList.ServerObjectIsNull != true)
+        {
+            var list = ListNode(fileList, siteUrl, webUrl, resource);
+            return new FoundNode(new SpNode
+            {
+                Kind = NodeKind.File,
+                Title = string.IsNullOrWhiteSpace(file.Title) ? file.Name : file.Title,
+                Url = resource + file.ServerRelativeUrl,
+                WebUrl = webUrl,
+                SiteUrl = siteUrl,
+                ListId = list.ListId,
+                ItemId = fileItem.Id,
+                ServerRelativeUrl = file.ServerRelativeUrl,
+                InLibrary = list.InLibrary,
+                Size = file.Length,
+                Modified = Utc(file.TimeLastModified),
+            }, list);
+        }
+
+        // a folder in a list
+        var folder = w.GetFolderByServerRelativePath(ResourcePath.FromDecodedUrl(full));
+        var folderItem = folder.ListItemAllFields;
+        ctx.Load(folder, f => f.Name, f => f.ServerRelativeUrl, f => f.ItemCount, f => f.TimeLastModified);
+        ctx.Load(folderItem, i => i.Id);
+        if (await TryAsync(ctx).ConfigureAwait(false) && folderItem.ServerObjectIsNull != true)
+        {
+            var folderList = folderItem.ParentList;
+            LoadList(ctx, folderList);
+            if (await TryAsync(ctx).ConfigureAwait(false))
+            {
+                var list = ListNode(folderList, siteUrl, webUrl, resource);
+                return new FoundNode(new SpNode
+                {
+                    Kind = NodeKind.Folder,
+                    Title = folder.Name,
+                    Url = resource + folder.ServerRelativeUrl,
+                    WebUrl = webUrl,
+                    SiteUrl = siteUrl,
+                    ListId = list.ListId,
+                    ItemId = folderItem.Id,
+                    ServerRelativeUrl = folder.ServerRelativeUrl,
+                    InLibrary = list.InLibrary,
+                    ItemCount = folder.ItemCount,
+                    Modified = Utc(folder.TimeLastModified),
+                }, list);
+            }
+        }
+
+        // a list or library itself
+        var whole = w.GetList(full);
+        LoadList(ctx, whole);
+        return await TryAsync(ctx).ConfigureAwait(false) && whole.ServerObjectIsNull != true
+            ? new FoundNode(ListNode(whole, siteUrl, webUrl, resource), null)
+            : null;
+    }
+
+    /// <summary>Runs what's loaded; false when SharePoint says it isn't there.</summary>
+    private static async Task<bool> TryAsync(ClientContext ctx)
+    {
+        try
+        {
+            await ctx.ExecuteQueryAsync().ConfigureAwait(false);
+            return true;
+        }
+        catch (ServerException)
+        {
+            return false;
+        }
+    }
+
+    private static void LoadList(ClientContext ctx, List l) => ctx.Load(l,
+        x => x.Id, x => x.Title, x => x.BaseType, x => x.BaseTemplate, x => x.ItemCount, x => x.LastItemModifiedDate, x => x.RootFolder.ServerRelativeUrl);
+
+    /// <summary>A list or library's row, as <see cref="GetWebContentsAsync"/> makes them.</summary>
+    private static SpNode ListNode(List l, string siteUrl, string webUrl, string resource) => new()
+    {
+        Kind = l.BaseType == BaseType.DocumentLibrary ? NodeKind.Library : NodeKind.List,
+        Title = l.Title,
+        Url = resource + l.RootFolder.ServerRelativeUrl,
+        WebUrl = webUrl,
+        SiteUrl = siteUrl,
+        ListId = l.Id,
+        ServerRelativeUrl = l.RootFolder.ServerRelativeUrl,
+        InLibrary = l.BaseType == BaseType.DocumentLibrary,
+        Template = l.BaseTemplate.ToString(CultureInfo.InvariantCulture),
+        ItemCount = l.ItemCount,
+        Modified = Utc(l.LastItemModifiedDate),
+    };
 
     private static async Task<IReadOnlyList<Web>> LoadSubwebsAsync(ClientContext ctx, Web web)
     {
@@ -93,9 +215,13 @@ public sealed partial class SharePointClient
     /// What's in a list, library or folder, a page at a time (<paramref name="cursor"/>
     /// is the previous page's <see cref="NodePage.Next"/>): folders first, then
     /// files or items, by name. Pages go by ID, which lists over the 5,000-item
-    /// threshold allow; each page is sorted on its own.
+    /// threshold allow; each page is sorted on its own. <paramref name="recursive"/>
+    /// takes in everything in its subfolders too.
     /// </summary>
-    public Task<NodePage> GetFolderContentsAsync(SpNode parent, string? cursor = null, CancellationToken ct = default) => RetryAsync(async () =>
+    public Task<NodePage> GetFolderContentsAsync(SpNode parent, string? cursor = null, CancellationToken ct = default) =>
+        GetFolderContentsAsync(parent, cursor, recursive: false, ct);
+
+    public Task<NodePage> GetFolderContentsAsync(SpNode parent, string? cursor, bool recursive, CancellationToken ct = default) => RetryAsync(async () =>
     {
         if (parent.ListId is not { } listId)
         {
@@ -106,7 +232,7 @@ public sealed partial class SharePointClient
         var query = new CamlQuery
         {
             ViewXml =
-                "<View><Query><OrderBy Override='TRUE'><FieldRef Name='ID'/></OrderBy></Query>" +
+                $"<View{(recursive ? " Scope='RecursiveAll'" : "")}><Query><OrderBy Override='TRUE'><FieldRef Name='ID'/></OrderBy></Query>" +
                 "<ViewFields><FieldRef Name='FileLeafRef'/><FieldRef Name='FileRef'/><FieldRef Name='Title'/><FieldRef Name='Modified'/>" +
                 "<FieldRef Name='File_x0020_Size'/><FieldRef Name='ItemChildCount'/><FieldRef Name='FolderChildCount'/><FieldRef Name='CheckoutUser'/></ViewFields>" +
                 $"<RowLimit Paged='TRUE'>{FolderPageSize}</RowLimit></View>",

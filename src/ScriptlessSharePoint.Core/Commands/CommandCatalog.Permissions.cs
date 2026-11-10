@@ -45,6 +45,37 @@ public static partial class CommandCatalog
 
         yield return new Command
         {
+            Id = "perm.check",
+            Title = "Check someone's access",
+            Group = "Permissions",
+            Description = "What a person can do with each one, whichever way they got it (groups included): full control, edit, view or nothing.",
+            Targets = Securables,
+            ReadOnly = true,
+            Glyph = "\uE77B",
+            Parameters = [Person("Person", "Their email address or user name.")],
+            Run = async (c, n) =>
+            {
+                var who = c.Args.Text("who").Trim();
+                var login = who.Contains('|') || !who.Contains('@') ? who : $"i:0#.f|membership|{who}";
+                using var ctx = await c.WebAsync(n).ConfigureAwait(false);
+                var permissions = n.Kind switch
+                {
+                    NodeKind.SiteCollection or NodeKind.Subsite => ctx.Web.GetUserEffectivePermissions(login),
+                    NodeKind.List or NodeKind.Library => Csom.List(ctx, n).GetUserEffectivePermissions(login),
+                    _ => Csom.Item(ctx, n).GetUserEffectivePermissions(login),
+                };
+                await ctx.RunAsync().ConfigureAwait(false);
+                var p = permissions.Value;
+                var level = p.Has(PermissionKind.ManagePermissions) ? "full control"
+                    : p.Has(PermissionKind.EditListItems) ? "can edit"
+                    : p.Has(PermissionKind.ViewListItems) || p.Has(PermissionKind.ViewPages) ? "can view"
+                    : "no access";
+                return CommandResult.Done($"{who}: {level}.");
+            },
+        };
+
+        yield return new Command
+        {
             Id = "perm.grant",
             Title = "Give access",
             Group = "Permissions",

@@ -127,6 +127,12 @@ Invoke $makepri @('new', '/pr', $layout, '/cf', $priconfig, '/mn', (Join-Path $l
 
 if ($Register) {
     Step 'register for this user (Developer Mode)'
+    # Rebuilding the folder breaks the registration made from it, and Windows
+    # won't register the same version again: remove it first, keeping its data
+    # (connections, saved selections, the token cache)
+    Get-AppxPackage $identity.name | Where-Object InstallLocation -eq $layout | ForEach-Object {
+        Remove-AppxPackage -Package $_.PackageFullName -PreserveApplicationData
+    }
     Add-AppxPackage -Register (Join-Path $layout 'AppxManifest.xml') -ForceApplicationShutdown
     Write-Host "`nRegistered: start Scriptless SharePoint from the Start menu, or run ``scriptless-sharepoint-mcp --version``."
     return

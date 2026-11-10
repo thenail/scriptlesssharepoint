@@ -75,9 +75,15 @@ public sealed record SpNode
     [JsonIgnore]
     public bool CanExpand => Kind is NodeKind.SiteCollection or NodeKind.Subsite or NodeKind.List or NodeKind.Library or NodeKind.Folder;
 
-    /// <summary>The same thing wherever it shows up: selections are kept by it.</summary>
+    /// <summary>
+    /// The same thing wherever it shows up: selections are kept by it. List IDs
+    /// are only unique within a web (sites made from one template, or copied,
+    /// share them), so an item's key has its web in it too.
+    /// </summary>
     [JsonIgnore]
-    public string Key => Kind is NodeKind.Item ? $"{Kind}:{ListId}:{ItemId}" : $"{Kind}:{Url.TrimEnd('/').ToLowerInvariant()}";
+    public string Key => Kind is NodeKind.Item
+        ? $"{Kind}:{WebUrl.TrimEnd('/').ToLowerInvariant()}:{ListId}:{ItemId}"
+        : $"{Kind}:{Url.TrimEnd('/').ToLowerInvariant()}";
 
     /// <summary>The file or folder name: the last part of the server-relative URL.</summary>
     [JsonIgnore]
@@ -89,18 +95,25 @@ public sealed record SpNode
 
     /// <summary>
     /// Whether this row is on the way down to <paramref name="target"/>: the
-    /// target itself, or the subsite, list or folder it's in. Opening a saved
-    /// selection follows these down from its site collection.
+    /// target itself, or the site, subsite, list or folder it's in.
     /// </summary>
     public bool Leads(SpNode target) => Key == target.Key || Kind switch
     {
         NodeKind.SiteCollection => SameUrl(Url, target.SiteUrl),
         NodeKind.Subsite => Within(target.WebUrl, WebUrl),
-        NodeKind.List or NodeKind.Library => ListId is { } id && id == target.ListId,
-        NodeKind.Folder => ListId is { } id && id == target.ListId && ServerRelativeUrl is { } folder &&
+        NodeKind.List or NodeKind.Library => ListId is { } id && id == target.ListId && SameUrl(WebUrl, target.WebUrl),
+        NodeKind.Folder => ListId is { } id && id == target.ListId && SameUrl(WebUrl, target.WebUrl) && ServerRelativeUrl is { } folder &&
                            target.ServerRelativeUrl?.StartsWith(folder.TrimEnd('/') + "/", StringComparison.OrdinalIgnoreCase) == true,
         _ => false,
     };
+
+    /// <summary>
+    /// The nearest of <paramref name="rows"/> on the way down to this (the
+    /// deepest one that <see cref="Leads"/> to it), or null: the row a saved
+    /// selection shows it under.
+    /// </summary>
+    public SpNode? NearestAbove(IEnumerable<SpNode> rows) =>
+        rows.Where(r => r.Key != Key && r.Leads(this)).MaxBy(r => r.Url.TrimEnd('/').Length);
 
     /// <summary>A site collection's row for a URL, when only the URL is known.</summary>
     public static SpNode SiteFromUrl(string url)
@@ -135,6 +148,9 @@ public sealed record SpNode
         WebUrl = adminUrl,
     };
 }
+
+/// <summary>Something found inside a site, and the row it's shown under (null: right under its site).</summary>
+public sealed record FoundNode(SpNode Node, SpNode? Parent);
 
 /// <summary>A page of a folder's contents; <see cref="Next"/> is SharePoint's paging info for the next, or null.</summary>
 public sealed record NodePage(IReadOnlyList<SpNode> Nodes, string? Next);

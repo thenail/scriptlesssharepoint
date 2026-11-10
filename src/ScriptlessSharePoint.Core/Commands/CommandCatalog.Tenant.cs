@@ -213,5 +213,93 @@ public static partial class CommandCatalog
                 return CommandResult.Done("Changed the tenant's default link.");
             },
         };
+
+        yield return new Command
+        {
+            Id = "tenant.anyone-expiry",
+            Title = "\"Anyone\" links expire",
+            Group = "Sharing",
+            Description = "How many days links that need no sign-in keep working, across the tenant. Sites can set fewer.",
+            PowerShell = "Set-SPOTenant -RequireAnonymousLinksExpireInDays",
+            Targets = TenantOnly,
+            NeedsAdmin = true,
+            Glyph = "\uE916",
+            Parameters = [new("days", "Expire after (days)", ParameterKind.Number) { Required = false, Min = 1, Max = 730, Hint = "Empty: they don't expire." }],
+            Run = async (c, _) =>
+            {
+                using var ctx = await c.AdminAsync().ConfigureAwait(false);
+                var tenant = new Tenant(ctx) { RequireAnonymousLinksExpireInDays = c.Args["days"] is null ? 0 : (int)c.Args.Number("days") };
+                await ctx.RunAsync().ConfigureAwait(false);
+                return CommandResult.Done(c.Args["days"] is null ? "\"Anyone\" links don't expire." : $"\"Anyone\" links expire after {c.Args.Number("days"):N0} days.");
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "tenant.guest-expiry",
+            Title = "Guest access expires",
+            Group = "Sharing",
+            Description = "Whether guests lose access to sites after a number of days, unless an owner renews it. Sites can set their own.",
+            PowerShell = "Set-SPOTenant -ExternalUserExpirationRequired -ExternalUserExpireInDays",
+            Targets = TenantOnly,
+            NeedsAdmin = true,
+            Glyph = "\uE916",
+            Parameters = [new("days", "Expire after (days)", ParameterKind.Number) { Required = false, Min = 30, Max = 730, Hint = "Empty: guests don't expire." }],
+            Run = async (c, _) =>
+            {
+                using var ctx = await c.AdminAsync().ConfigureAwait(false);
+                var tenant = new Tenant(ctx) { ExternalUserExpirationRequired = c.Args["days"] is not null };
+                if (c.Args["days"] is not null)
+                {
+                    tenant.ExternalUserExpireInDays = (int)c.Args.Number("days");
+                }
+                await ctx.RunAsync().ConfigureAwait(false);
+                return CommandResult.Done(c.Args["days"] is null ? "Guests don't expire." : $"Guest access expires after {c.Args.Number("days"):N0} days.");
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "tenant.legacy-auth",
+            Title = "Legacy sign-in",
+            Group = "Settings",
+            Description = "Whether apps that don't use modern authentication (old Office versions, some tools) can sign in to SharePoint.",
+            PowerShell = "Set-SPOTenant -LegacyAuthProtocolsEnabled",
+            Targets = TenantOnly,
+            NeedsAdmin = true,
+            Glyph = "\uE8D7",
+            Parameters = [Toggle("allow", "Allow legacy sign-in", false)],
+            Run = async (c, _) =>
+            {
+                using var ctx = await c.AdminAsync().ConfigureAwait(false);
+                var tenant = new Tenant(ctx) { LegacyAuthProtocolsEnabled = c.Args.Toggle("allow") };
+                await ctx.RunAsync().ConfigureAwait(false);
+                return CommandResult.Done(c.Args.Toggle("allow") ? "Legacy sign-in allowed." : "Legacy sign-in blocked.");
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "tenant.hubs",
+            Title = "List hub sites",
+            Group = "Hub sites",
+            Description = "The tenant's hub sites, with their addresses.",
+            PowerShell = "Get-SPOHubSite",
+            Targets = TenantOnly,
+            NeedsAdmin = true,
+            ReadOnly = true,
+            Glyph = "\uE71D",
+            Run = async (c, _) =>
+            {
+                using var ctx = await c.AdminAsync().ConfigureAwait(false);
+                var hubs = new Tenant(ctx).GetHubSitesProperties();
+                ctx.Load(hubs);
+                await ctx.RunAsync().ConfigureAwait(false);
+                return hubs.Count == 0
+                    ? CommandResult.Done("The tenant has no hub sites.")
+                    : CommandResult.Done($"{hubs.Count} hub sites.", string.Join(Environment.NewLine,
+                        hubs.OrderBy(h => h.Title, StringComparer.CurrentCultureIgnoreCase).Select(h => $"{h.Title}  ·  {h.SiteUrl}")));
+            },
+        };
     }
 }

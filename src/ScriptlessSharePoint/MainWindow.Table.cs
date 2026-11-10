@@ -161,9 +161,10 @@ public sealed partial class MainWindow
             return;
         }
         // a saved selection opens again; anything else reloads the site collections
-        if (shownSaved is { } s && savedStore.Load(s.File) is { } fresh)
+        // (one from the history has no file: it shows again as it was)
+        if (shownSaved is { } s && (s.File.Length == 0 ? s : savedStore.Load(s.File)) is { } fresh)
         {
-            _ = ShowSavedAsync(fresh);
+            ShowSaved(fresh);
         }
         else
         {
@@ -376,6 +377,10 @@ public sealed partial class MainWindow
             {
                 siteOf[node.Key] = site;
             }
+            if (row.Parent?.Node is { Kind: not NodeKind.SiteCollection } parent)
+            {
+                parentOf[node.Key] = parent;
+            }
         }
         else
         {
@@ -406,6 +411,7 @@ public sealed partial class MainWindow
     {
         selection.Clear();
         siteOf.Clear();
+        parentOf.Clear();
         pickedKind = NodeKind.Tenant;
         foreach (var r in rows)
         {
@@ -473,8 +479,170 @@ public sealed partial class MainWindow
             case After.ReloadSites when changed.Count > 0:
                 _ = LoadSitesAsync();
                 break;
+            case After.Tick:
+                TickFound(changed);
+                break;
         }
         UpdatePane();
+    }
+
+    /// <summary>
+    /// What finders found becomes the selection, in place of the sites they
+    /// looked in, each kept with its site and the row it's under (for saving).
+    /// Nothing found: the selection stays as it was.
+    /// </summary>
+    private void TickFound(IReadOnlyList<TargetResult> results)
+    {
+        var found = results
+            .SelectMany(r => r.Result.Found.Select(f => (f.Node, f.Parent, Site: r.Target.Kind == NodeKind.SiteCollection
+                ? r.Target
+                : siteOf.GetValueOrDefault(r.Target.Key) ?? SpNode.SiteFromUrl(r.Target.SiteUrl ?? r.Target.Url))))
+            .DistinctBy(f => f.Node.Key)
+            .ToList();
+        if (found.Count == 0)
+        {
+            return;
+        }
+        foreach (var key in selection.Keys.ToList())
+        {
+            Untick(key);
+        }
+        siteOf.Clear();
+        parentOf.Clear();
+        foreach (var (node, parent, site) in found)
+        {
+            selection[node.Key] = node;
+            siteOf[node.Key] = site;
+            if (parent is { Kind: not NodeKind.SiteCollection })
+            {
+                parentOf[node.Key] = parent;
+            }
+            foreach (var row in rows.Where(r => r.Node?.Key == node.Key))
+            {
+                row.SetChecked(true);
+            }
+        }
+        pickedKind = found.GroupBy(f => f.Node.Kind).OrderByDescending(g => g.Count()).ThenBy(g => g.Key).First().Key;
+        if (ShowFound(results) is { } first)
+        {
+            Table.ScrollIntoView(first);
+        }
+    }
+
+    /// <summary>
+    /// Shows what finders found in the table: each site collection they looked
+    /// in opens to just those, under the subsites, lists and folders they're
+    /// in (nothing is loaded). Closing and opening a row shows all of it again.
+    /// Returns the first found row.
+    /// </summary>
+    private Row? ShowFound(IReadOnlyList<TargetResult> results)
+    {
+        // by the site collection row each target is under: the rows down to it, and what's in it
+        var groups = new Dictionary<Row, List<SpNode>>();
+        foreach (var (target, result) in results.Where(r => r.Result.Found.Count > 0))
+        {
+            List<SpNode> chain;
+            Row top;
+            if (rows.FirstOrDefault(r => r.Node?.Key == target.Key) is { } row)
+            {
+                (top, chain) = (row, []);
+                for (var r = row; r is not null; r = r.Parent)
+                {
+                    chain.Insert(0, r.Node!);
+                    top = r;
+                }
+            }
+            else
+            {
+                var site = siteOf.GetValueOrDefault(result.Found[0].Node.Key) ?? SpNode.SiteFromUrl(target.SiteUrl ?? target.Url);
+                if (rows.FirstOrDefault(r => r.Depth == 0 && r.Node?.Key == site.Key) is not { } siteRow)
+                {
+                    continue;
+                }
+                (top, chain) = (siteRow, [site, target]);
+            }
+            var shown = groups.TryGetValue(top, out var list) ? list : groups[top] = [];
+            shown.AddRange(chain);
+            shown.AddRange(result.Found.Select(f => f.Parent).OfType<SpNode>());
+            shown.AddRange(result.Found.Select(f => f.Node));
+        }
+
+        Row? first = null;
+        foreach (var (top, shown) in groups)
+        {
+            Collapse(top);
+            var row = InsertTree(shown.DistinctBy(n => n.Key).ToList(), top);
+            if (row is not null && (first is null || rows.IndexOf(row) < rows.IndexOf(first)))
+            {
+                first = row;
+            }
+        }
+        return first;
+    }
+
+    /// <summary>
+    /// Puts rows in for <paramref name="shown"/>, each under the nearest of them
+    /// above it (<see cref="SpNode.NearestAbove"/>), and keeps that as the
+    /// ticked ones' parent. With <paramref name="root"/> (one of them, already
+    /// in the table), they go under it; else at the end, site collections and
+    /// whatever has nothing above it at the top. Returns the first ticked row.
+    /// </summary>
+    private Row? InsertTree(IReadOnlyList<SpNode> shown, Row? root)
+    {
+        var under = new Dictionary<string, List<SpNode>>();
+        var top = new List<SpNode>();
+        foreach (var node in shown)
+        {
+            if (node.Key == root?.Node?.Key)
+            {
+                continue;
+            }
+            var above = node.Kind == NodeKind.SiteCollection ? null : node.NearestAbove(shown);
+            if (above is null && root is null)
+            {
+                top.Add(node);
+                continue;
+            }
+            above ??= root!.Node!;
+            (under.TryGetValue(above.Key, out var list) ? list : under[above.Key] = []).Add(node);
+            if (above.Kind != NodeKind.SiteCollection && selection.ContainsKey(node.Key))
+            {
+                parentOf[node.Key] = above;
+            }
+        }
+
+        var at = root is null ? rows.Count : rows.IndexOf(root) + 1;
+        Row? first = null;
+        void Add(SpNode node, Row? parent)
+        {
+            var row = Row.ForNode(this, node, parent, selection.ContainsKey(node.Key));
+            rows.Insert(at++, row);
+            if (row.IsChecked)
+            {
+                first ??= row;
+            }
+            AddUnder(node, row);
+        }
+        void AddUnder(SpNode node, Row row)
+        {
+            if (under.TryGetValue(node.Key, out var children))
+            {
+                row.IsExpanded = true;
+                foreach (var child in children.OrderBy(n => n.CanExpand ? 0 : 1).ThenBy(n => n.Kind).ThenBy(n => n.Title, StringComparer.CurrentCultureIgnoreCase))
+                {
+                    Add(child, row);
+                }
+            }
+        }
+        if (root is not null)
+        {
+            AddUnder(root.Node!, root);
+        }
+        foreach (var node in top.OrderBy(n => n.Title, StringComparer.CurrentCultureIgnoreCase))
+        {
+            Add(node, null);
+        }
+        return first;
     }
 
     // ---- the table's own states ----

@@ -105,6 +105,79 @@ internal static class Csom
         }
     }
 
+    /// <summary>
+    /// Changes a property bag (a web's, or a list's root folder's). SharePoint
+    /// refuses that where custom scripts are blocked, as they are on modern
+    /// sites; then they're allowed for the moment, the change is made, and
+    /// they're blocked again (needs a SharePoint administrator). Returns
+    /// whether that was needed.
+    /// </summary>
+    public static async Task<bool> WithScriptsAsync(this CommandContext c, SpNode n, Func<Task> change)
+    {
+        try
+        {
+            await change().ConfigureAwait(false);
+            return false;
+        }
+        catch (ServerUnauthorizedAccessException)
+        {
+        }
+
+        ClientContext ctx;
+        SiteProperties props;
+        try
+        {
+            (ctx, _, props) = await c.SitePropertiesAsync(n).ConfigureAwait(false);
+        }
+        catch (Exception e) when (SharePointClient.IsAccessDenied(e))
+        {
+            throw new SharePointOperationException(
+                "Access denied. Custom scripts are blocked on this site, so its settings for search and its property bag can't change. " +
+                "A SharePoint administrator can do this (the app allows custom scripts for the moment and blocks them again).", e);
+        }
+        using (ctx)
+        {
+            if (props.DenyAddAndCustomizePages != DenyAddAndCustomizePagesStatus.Enabled)
+            {
+                throw new SharePointOperationException("Access denied. This needs the site's owner or a SharePoint administrator.");
+            }
+            await SetScriptsAsync(ctx, props, DenyAddAndCustomizePagesStatus.Disabled, c.Cancellation).ConfigureAwait(false);
+            try
+            {
+                // allowing them can take a moment to reach the site
+                for (var attempt = 1; ; attempt++)
+                {
+                    try
+                    {
+                        await change().ConfigureAwait(false);
+                        return true;
+                    }
+                    catch (ServerUnauthorizedAccessException) when (attempt < 4)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(5 * attempt), c.Cancellation).ConfigureAwait(false);
+                    }
+                }
+            }
+            finally
+            {
+                await SetScriptsAsync(ctx, props, DenyAddAndCustomizePagesStatus.Enabled, CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static async Task SetScriptsAsync(ClientContext ctx, SiteProperties props, DenyAddAndCustomizePagesStatus status, CancellationToken ct)
+    {
+        props.DenyAddAndCustomizePages = status;
+        var op = props.Update();
+        ctx.Load(op, o => o.IsComplete, o => o.PollingInterval);
+        await ctx.ExecuteQueryAsync().ConfigureAwait(false);
+        await WaitAsync(ctx, op, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>"Search will crawl it again." and, when custom scripts were allowed for it, that they're blocked again.</summary>
+    public static string ScriptsNote(string done, bool allowed) =>
+        allowed ? $"{done} (Custom scripts were allowed for it, and blocked again.)" : done;
+
     /// <summary>Waits for a tenant operation (an SpoOperation) to finish, as the SPO cmdlets do unless -NoWait.</summary>
     public static async Task WaitAsync(ClientContext ctx, SpoOperation op, CancellationToken ct)
     {

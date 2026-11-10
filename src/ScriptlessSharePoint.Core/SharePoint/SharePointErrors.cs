@@ -22,7 +22,7 @@ public static class SharePointErrors
             case SignInRequiredException or SharePointOperationException or ArgumentException:
                 return e.Message;
             case ServerUnauthorizedAccessException:
-                return "Access denied. This needs more SharePoint permissions than the connection has: enabling app catalogs and listing all sites need a SharePoint administrator (or an app with Sites.FullControl.All).";
+                return "Access denied. The connection doesn't have permission for this here: a site's settings need its owner, and tenant settings, app catalogs and the list of all sites need a SharePoint administrator (or an app with Sites.FullControl.All).";
             case ServerException server:
                 return $"SharePoint: {server.Message}";
             case MsalUiRequiredException:
@@ -65,7 +65,7 @@ public static class SharePointErrors
         401 when diagnostics?.Contains("Unsupported app only token", StringComparison.OrdinalIgnoreCase) == true =>
             "SharePoint doesn't accept this app-only token: app-only access to SharePoint needs a certificate, not a client secret.",
         401 => "SharePoint rejected the token (401). Check that it's for this tenant's SharePoint (https://<tenant>.sharepoint.com), that it hasn't expired, and that the app has SharePoint permissions.",
-        403 => "Access denied (403). The account or app doesn't have permission for this: enabling app catalogs needs a SharePoint administrator.",
+        403 => "Access denied (403). The account or app doesn't have permission for this here: a site's settings need its owner, and tenant settings and app catalogs need a SharePoint administrator.",
         404 => "SharePoint couldn't find that site (404).",
         429 or 503 => "SharePoint is throttling requests. Wait a minute and try again.",
         _ => $"SharePoint answered HTTP {status}.",

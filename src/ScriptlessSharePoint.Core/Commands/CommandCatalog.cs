@@ -33,6 +33,7 @@ public static partial class CommandCatalog
     public static readonly IReadOnlyList<string> GroupOrder =
     [
         "Open",
+        "Tick inside",
         "Details",
         "Create",
         "Content",
@@ -56,6 +57,7 @@ public static partial class CommandCatalog
     private static readonly Lazy<IReadOnlyList<Command>> all = new(() =>
     [
         .. Common(),
+        .. FindCommands(),
         .. Tenant(),
         .. SiteCollection(),
         .. Web(),
@@ -100,6 +102,9 @@ public static partial class CommandCatalog
 
     private static CommandParameter Comment(bool required = false) =>
         new("comment", "Comment", ParameterKind.LongText) { Required = required };
+
+    /// <summary>"1 version", "3 versions".</summary>
+    private static string Plural(int count, string one, string many) => $"{count:N0} {(count == 1 ? one : many)}";
 
     private static Task<CommandResult> Done(string message, string? detail = null) =>
         Task.FromResult(CommandResult.Done(message, detail));

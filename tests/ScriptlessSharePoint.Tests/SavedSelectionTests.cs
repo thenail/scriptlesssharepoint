@@ -123,4 +123,73 @@ public sealed class SavedSelectionTests : IDisposable
         Assert.Equal("/sites/hr", site.Title);
         Assert.Equal(SiteNode.Key, site.Key);
     }
+
+    [Fact]
+    public void Keeps_the_parents()
+    {
+        var saved = store.Save("a", "conn1", [File], [SiteNode], [Folder, Folder]);
+        Assert.Equal(Folder, Assert.Single(saved.Parents));
+        Assert.Equal(Folder, Assert.Single(store.Load(saved.File)!.Parents));
+    }
+
+    [Fact]
+    public void Shows_each_item_under_the_nearest_row_above_it()
+    {
+        Assert.Equal(Folder, File.NearestAbove([SiteNode, Library, Folder, File]));
+        Assert.Equal(Library, File.NearestAbove([SiteNode, Library, File]));
+        Assert.Equal(Subsite, File.NearestAbove([SiteNode, Subsite]));
+        Assert.Equal(Subsite, Library.NearestAbove([SiteNode, Subsite, Folder]));
+        Assert.Equal(SiteNode, Subsite.NearestAbove([SiteNode, Library]));
+        Assert.Null(SiteNode.NearestAbove([SiteNode, Library]));
+        Assert.Null(File.NearestAbove([Library with { ListId = Guid.NewGuid() }]));
+    }
+
+    [Fact]
+    public void Adds_items_keeping_what_was_there()
+    {
+        var saved = store.Save("a", "conn1", [File], [SiteNode], [Folder]);
+        var added = store.Add(saved.File, [Library, File], [SiteNode], [Subsite])!;
+        Assert.Equal([File, Library], added.Items);
+        Assert.Equal(SiteNode, Assert.Single(added.Sites));
+        Assert.Equal([Folder, Subsite], added.Parents);
+        Assert.Equal(added.Items, store.Load(saved.File)!.Items);
+        Assert.Equal("a", store.Load(saved.File)!.Name);
+
+        Assert.Null(store.Add(Path.Combine(dir, "gone.json"), [File], [], []));
+    }
+
+    [Fact]
+    public void Updates_replace_what_it_holds_keeping_its_name_and_place()
+    {
+        var first = store.Save("first", "conn1", [File], [SiteNode], [Folder]);
+        var saved = store.Save("a", "conn1", [File, Library], [SiteNode], [Folder]);
+        var updated = store.Update(saved.File, [Library], [SiteNode], [])!;
+        var loaded = store.Load(saved.File)!;
+        Assert.Equal([Library], loaded.Items);
+        Assert.Empty(loaded.Parents);
+        Assert.Equal("a", loaded.Name);
+        Assert.Equal(saved.Saved, loaded.Saved);
+        Assert.Equal(updated.Items, loaded.Items);
+        Assert.Equal([first.File, saved.File], store.List().Select(s => s.File));
+
+        Assert.Null(store.Update(Path.Combine(dir, "gone.json"), [File], [], []));
+    }
+
+    [Fact]
+    public void Keeps_same_id_lists_in_different_sites_apart()
+    {
+        // two sites made from one template: their libraries share an ID
+        const string other = "https://contoso.sharepoint.com/sites/finance";
+        var otherSite = SpNode.FromSite(new SiteSummary(other, "Finance", "GROUP#0", null, null));
+        var otherLibrary = Library with { Url = other + "/Shared Documents", WebUrl = other, SiteUrl = other, ServerRelativeUrl = "/sites/finance/Shared Documents" };
+        var otherFolder = Folder with { Url = otherLibrary.Url + "/2025", WebUrl = other, SiteUrl = other, ServerRelativeUrl = otherLibrary.ServerRelativeUrl + "/2025" };
+
+        Assert.False(Library.Leads(otherLibrary));
+        Assert.False(Library.Leads(otherFolder));
+        Assert.False(Folder.Leads(otherFolder with { ServerRelativeUrl = "/sites/hr/policies/Shared Documents/2025/x" }));
+        Assert.Equal(otherSite, otherLibrary.NearestAbove([SiteNode, Library, otherSite]));
+
+        var item = new SpNode { Kind = NodeKind.Item, Title = "1", Url = Site + "/Lists/T/DispForm.aspx?ID=1", WebUrl = Site, ListId = Docs, ItemId = 1 };
+        Assert.NotEqual(item.Key, (item with { Url = other + "/Lists/T/DispForm.aspx?ID=1", WebUrl = other }).Key);
+    }
 }

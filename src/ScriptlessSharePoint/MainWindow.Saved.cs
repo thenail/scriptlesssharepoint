@@ -1,5 +1,8 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+
+using Windows.ApplicationModel.DataTransfer;
 
 using ScriptlessSharePoint.Selections;
 using ScriptlessSharePoint.SharePoint;
@@ -9,33 +12,28 @@ namespace ScriptlessSharePoint.App;
 /// <summary>
 /// Selections saved under a name, as File Size has them: listed in the pane
 /// below the connections, after a gap. Picking one makes it the selection and
-/// shows it in its connection's table, ticked, with the sites, lists and
-/// folders down to each item opened. Kept in Selections\ in the data folder,
-/// one file each (Core\Selections).
+/// shows it in its connection's table, ticked, each item under the row it was
+/// ticked in, without loading anything around it. Kept in Selections\ in the
+/// data folder, one file each (Core\Selections).
 /// </summary>
 public sealed partial class MainWindow
 {
     /// <summary>The navigation item's tag: this, then the saved selection's file.</summary>
     private const string SavedTag = "saved:";
 
-    /// <summary>Rows opened to show one saved selection: enough for any sensible list, not so many the table drowns.</summary>
-    private const int OpenLimit = 300;
-
-    /// <summary>"Show more" pages followed in one folder while looking for an item.</summary>
-    private const int PageLimit = 40;
-
     private readonly SavedSelectionStore savedStore = new();
 
     /// <summary>The site collection each ticked thing is in, for saving the selection.</summary>
     private readonly Dictionary<string, SpNode> siteOf = [];
+
+    /// <summary>The subsite, list or folder each ticked thing was ticked in, for saving the selection.</summary>
+    private readonly Dictionary<string, SpNode> parentOf = [];
 
     /// <summary>The saved selection the table shows, instead of every site collection.</summary>
     private SavedSelection? shownSaved;
 
     /// <summary>A saved selection to show once its connection is signed in.</summary>
     private SavedSelection? pendingSaved;
-
-    private int opened;
 
     // ---- in the navigation pane ----
 
@@ -71,6 +69,17 @@ public sealed partial class MainWindow
                     // the gap between the connections and these
                     Margin = first ? new Thickness(0, 16, 0, 0) : new Thickness(0),
                     ContextFlyout = SavedMenu(s.File),
+                    AllowDrop = true,
+                    // how many items it has
+                    InfoBadge = new InfoBadge { Value = s.Items.Count },
+                };
+                var file = s.File;
+                item.DragOver += (_, e) => MarkDropTarget(item, OnSavedDragOver(file, e));
+                item.DragLeave += (_, _) => MarkDropTarget(item, false);
+                item.Drop += (_, _) =>
+                {
+                    MarkDropTarget(item, false);
+                    OnSavedDrop(file);
                 };
                 ToolTipService.SetToolTip(item, $"{Summary(s.Items)}\n{connection.Name} · saved {s.Saved.LocalDateTime:g}");
                 Nav.MenuItems.Add(item);
@@ -128,9 +137,66 @@ public sealed partial class MainWindow
 
     // ---- saving, renaming, removing ----
 
-    private async void OnSaveSelection(object sender, RoutedEventArgs e) => await SaveSelectionAsync();
+    private async void OnSaveSelection(SplitButton sender, SplitButtonClickEventArgs e) => await SaveSelectionAsync();
 
-    private async Task SaveSelectionAsync()
+    private async void OnSaveSelectionAsNew(object sender, RoutedEventArgs e) => await SaveSelectionAsync(asNew: true);
+
+    /// <summary>The saved selection on show, when there is one of this connection: Save goes to it.</summary>
+    private SavedSelection? SaveTarget =>
+        shownSaved is { File.Length: > 0 } s && s.ConnectionId == active?.Id && File.Exists(s.File) ? s : null;
+
+    /// <summary>Save's tooltip: where it saves to.</summary>
+    private void UpdateSaveButton() => ToolTipService.SetToolTip(SaveSelectionButton,
+        SaveTarget is { } s ? $"Save the changes to “{s.Name}” (Ctrl+S)" : "Save the selection (Ctrl+S)");
+
+    /// <summary>
+    /// Saves what's ticked: into the saved selection on show (what's ticked now
+    /// is what it holds), or, with <paramref name="asNew"/> or none on show, as
+    /// a new one under a name.
+    /// </summary>
+    private async Task SaveSelectionAsync(bool asNew = false)
+    {
+        if (selection.Count == 0 || active is null)
+        {
+            return;
+        }
+        if (!asNew && SaveTarget is { } target)
+        {
+            var items = selection.Values.ToList();
+            SavedSelection? updated;
+            try
+            {
+                updated = savedStore.Update(target.File, items,
+                    items.Select(n => siteOf.TryGetValue(n.Key, out var site) ? site : SpNode.SiteFromUrl(n.SiteUrl ?? n.Url)),
+                    items.Select(n => parentOf.GetValueOrDefault(n.Key)).OfType<SpNode>());
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                ShowError(new InvalidOperationException($"Couldn't save the selection: {ex.Message}"));
+                return;
+            }
+            if (updated is not null)
+            {
+                var before = target.Items.Select(n => n.Key).ToHashSet();
+                var now = updated.Items.Select(n => n.Key).ToHashSet();
+                var added = now.Count(k => !before.Contains(k));
+                var removed = before.Count(k => !now.Contains(k));
+                shownSaved = updated;
+                ShowToast($"Saved “{updated.Name}”", string.Join(" · ", new[]
+                {
+                    added > 0 ? $"{added:N0} added" : null,
+                    removed > 0 ? $"{removed:N0} removed" : null,
+                    added + removed == 0 ? "No changes" : null,
+                    $"{Plural(updated.Items.Count, "item", "items")} in all",
+                }.OfType<string>()));
+                RefreshSavedSelections();
+                return;
+            }
+        }
+        await SaveAsNewAsync();
+    }
+
+    private async Task SaveAsNewAsync()
     {
         if (selection.Count == 0 || active is null)
         {
@@ -143,9 +209,10 @@ public sealed partial class MainWindow
         }
         var items = selection.Values.ToList();
         var sites = items.Select(n => siteOf.TryGetValue(n.Key, out var site) ? site : SpNode.SiteFromUrl(n.SiteUrl ?? n.Url));
+        SavedSelection saved;
         try
         {
-            savedStore.Save(name, active.Id, items, sites);
+            saved = savedStore.Save(name, active.Id, items, sites, items.Select(n => parentOf.GetValueOrDefault(n.Key)).OfType<SpNode>());
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -153,6 +220,16 @@ public sealed partial class MainWindow
             return;
         }
         RefreshSavedSelections();
+        // saved from another saved selection: the new one is the one on show now, and Save goes to it
+        if (shownSaved is not null)
+        {
+            shownSaved = saved;
+            SelectNavQuietly(SavedTag + saved.File);
+            StatusTitle.Text = $"Saved selection: {saved.Name}";
+        }
+        UpdateSaveButton();
+        ShowToast($"Saved “{saved.Name}”", $"{Plural(saved.Items.Count, "item", "items")} · in the list on the left",
+            shownSaved?.File == saved.File ? null : ("Open", () => Nav.SelectedItem = NavItem(SavedTag + saved.File)));
     }
 
     private async Task RenameSavedAsync(string file)
@@ -237,16 +314,21 @@ public sealed partial class MainWindow
             await ShowConnectionAsync(s.ConnectionId, force: active?.Id == s.ConnectionId);
             return;
         }
-        await ShowSavedAsync(s);
+        ShowSaved(s);
     }
 
     /// <summary>After signing in: the saved selection waiting for it, or every site collection.</summary>
     private Task ShowSitesOrSavedAsync()
     {
+        if (pendingSaved is null)
+        {
+            pendingForm = null;
+        }
         if (pendingSaved is { } s && s.ConnectionId == active?.Id)
         {
             pendingSaved = null;
-            return ShowSavedAsync(s);
+            ShowSaved(s);
+            return Task.CompletedTask;
         }
         pendingSaved = null;
         return LoadSitesAsync();
@@ -254,12 +336,13 @@ public sealed partial class MainWindow
 
     /// <summary>
     /// The saved selection becomes the selection, and the table shows the site
-    /// collections it's in, opened down to each item. What can't be found any
-    /// more (moved, renamed, deleted, or not for this account) is left unticked.
+    /// collections it's in, each item under the subsite, list or folder it was
+    /// ticked in. Nothing is loaded: those rows show only what was saved until
+    /// they're closed and opened again.
     /// </summary>
-    private async Task ShowSavedAsync(SavedSelection s)
+    private void ShowSaved(SavedSelection s)
     {
-        var v = ++view;
+        ++view;
         shownSaved = s;
         SelectNavQuietly(SavedTag + s.File);
         typing?.Stop();
@@ -270,6 +353,7 @@ public sealed partial class MainWindow
 
         selection.Clear();
         siteOf.Clear();
+        parentOf.Clear();
         var sites = s.Sites.ToDictionary(n => n.Key);
         foreach (var item in s.Items)
         {
@@ -278,95 +362,219 @@ public sealed partial class MainWindow
             siteOf[item.Key] = sites.GetValueOrDefault(site.Key) ?? site;
         }
 
+        // every row there is to show, each under the nearest one above it
+        var roots = siteOf.Values.DistinctBy(n => n.Key).ToList();
         ResetTable();
-        foreach (var root in siteOf.Values.DistinctBy(n => n.Key).OrderBy(n => n.Title, StringComparer.CurrentCultureIgnoreCase))
-        {
-            rows.Add(Row.ForNode(this, root, null, selection.ContainsKey(root.Key)));
-        }
-        ShowPane(true);
-        ShowOverview();
-        UpdatePane();
-        ShowAllButton.Visibility = Visibility.Visible;
-        SetStatus($"Saved selection: {s.Name}", $"Opening the way down to {Plural(s.Items.Count, "item", "items")}…", working: true);
+        var first = InsertTree(roots.Concat(s.Parents).Concat(s.Items).DistinctBy(n => n.Key).ToList(), null);
 
-        // one at a time, in table order, so each opens on what the last one opened
-        opened = 0;
-        var missing = new List<SpNode>();
-        Row? first = null;
-        foreach (var item in s.Items.OrderBy(n => siteOf[n.Key].Title, StringComparer.CurrentCultureIgnoreCase).ThenBy(n => n.Url, StringComparer.OrdinalIgnoreCase))
-        {
-            var row = await RevealAsync(item, v);
-            if (v != view)
-            {
-                return;
-            }
-            if (row is null)
-            {
-                missing.Add(item);
-            }
-            else
-            {
-                first ??= row;
-            }
-        }
-        foreach (var m in missing)
-        {
-            Untick(m.Key);
-        }
         // the pane acts on what was saved: the kind there's most of
         if (selection.Count > 0)
         {
             pickedKind = selection.Values.GroupBy(n => n.Kind).OrderByDescending(g => g.Count()).ThenBy(g => g.Key).First().Key;
         }
+        ShowPane(true);
+        ShowOverview();
         UpdatePane();
-        SetStatus($"Saved selection: {s.Name}", missing.Count == 0
-            ? $"{Summary(s.Items)}, from {Plural(s.Sites.Count, "site collection", "site collections")}."
-            : $"{Plural(missing.Count, "item wasn't", "items weren't")} found, so {(missing.Count == 1 ? "it isn't" : "they aren't")} ticked: moved, renamed or deleted, or not for this account.");
+        ShowAllButton.Visibility = Visibility.Visible;
+        SetStatus(s.File.Length == 0 ? s.Name : $"Saved selection: {s.Name}", $"{Summary(s.Items)}, from {Plural(roots.Count, "site collection", "site collections")}.");
         if (first is not null)
         {
             Table.ScrollIntoView(first);
         }
+        OpenPendingForm();
+    }
+
+    // ---- dragging rows onto one ----
+
+    /// <summary>What a drag from the table carries: each item, its site collection, and the row it's under.</summary>
+    private sealed record Dragged(SpNode Node, SpNode Site, SpNode? Parent);
+
+    /// <summary>The rows being dragged, while a drag from the table is on (it never leaves the app).</summary>
+    private List<Dragged>? dragged;
+    private string? draggedFrom;
+
+    /// <summary>
+    /// A ticked row takes everything ticked with it; any other row goes on its
+    /// own. Notes and "show more" don't drag.
+    /// </summary>
+    private void OnRowsDragStarting(object sender, DragItemsStartingEventArgs e)
+    {
+        if (active is null || e.Items.FirstOrDefault() is not Row { Node: { } node } row)
+        {
+            e.Cancel = true;
+            return;
+        }
+        dragged = row.IsChecked
+            ? selection.Values.Select(n => new Dragged(n,
+                siteOf.TryGetValue(n.Key, out var site) ? site : SpNode.SiteFromUrl(n.SiteUrl ?? n.Url),
+                parentOf.GetValueOrDefault(n.Key))).ToList()
+            : [new Dragged(node, SiteOf(row), row.Parent?.Node is { Kind: not NodeKind.SiteCollection } parent ? parent : null)];
+        draggedFrom = active.Id;
+        e.Data.SetText(string.Join(Environment.NewLine, dragged.Select(d => d.Node.Url)));
+        e.Data.RequestedOperation = DataPackageOperation.Copy;
+    }
+
+    private void OnRowsDragCompleted(ListViewBase sender, DragItemsCompletedEventArgs args)
+    {
+        dragged = null;
+        draggedFrom = null;
+        foreach (var item in Nav.MenuItems.OfType<NavigationViewItem>())
+        {
+            MarkDropTarget(item, false);
+        }
+    }
+
+    /// <summary>The site collection a row is in: the row at the top of its branch.</summary>
+    private static SpNode SiteOf(Row row)
+    {
+        var root = row;
+        while (root.Parent is not null)
+        {
+            root = root.Parent;
+        }
+        return root.Node is { Kind: NodeKind.SiteCollection } site ? site : SpNode.SiteFromUrl(row.Node!.SiteUrl ?? row.Node.Url);
+    }
+
+    /// <summary>Takes rows from the table, for a saved selection of the same connection. True when it takes them.</summary>
+    private bool OnSavedDragOver(string file, DragEventArgs e)
+    {
+        if (dragged is not { Count: > 0 } items || savedStore.Load(file) is not { } s)
+        {
+            e.AcceptedOperation = DataPackageOperation.None;
+            return false;
+        }
+        e.DragUIOverride.IsGlyphVisible = false;
+        if (s.ConnectionId != draggedFrom)
+        {
+            e.AcceptedOperation = DataPackageOperation.None;
+            e.DragUIOverride.Caption = "Only for a selection of the same connection";
+            return false;
+        }
+        var have = s.Items.Select(n => n.Key).ToHashSet();
+        var add = items.Where(d => !have.Contains(d.Node.Key)).ToList();
+        e.AcceptedOperation = add.Count == 0 ? DataPackageOperation.None : DataPackageOperation.Copy;
+        e.DragUIOverride.Caption = add.Count == 0
+            ? $"Already in “{s.Name}”"
+            : $"Add {Summary(add.Select(d => d.Node))} to “{s.Name}”";
+        return add.Count > 0;
     }
 
     /// <summary>
-    /// Opens the rows on the way down to <paramref name="target"/> (its site,
-    /// subsites, list, folders, following "show more" where it has to) and
-    /// returns its row, or null when it isn't there.
+    /// The saved selection a drop would go to: a row darker than the one
+    /// that's open, in the text's colour (dark on light, light on dark). The
+    /// item paints its own background when it isn't the open one.
     /// </summary>
-    private async Task<Row?> RevealAsync(SpNode target, int v)
+    private static void MarkDropTarget(NavigationViewItem item, bool on)
     {
-        var row = rows.FirstOrDefault(r => r.Depth == 0 && r.Node is { } n && n.Leads(target));
-        while (row?.Node is { } node && v == view)
+        if (!on)
         {
-            if (node.Key == target.Key)
-            {
-                return row;
-            }
-            if (!node.CanExpand)
-            {
-                return null;
-            }
-            if (!row.IsExpanded)
-            {
-                if (opened++ >= OpenLimit)
-                {
-                    return null;
-                }
-                await ExpandAsync(row);
-            }
-            Row? next = null;
-            for (var page = 0; page < PageLimit && v == view; page++)
-            {
-                next = Children(row).FirstOrDefault(c => c.Node is { } n && n.Leads(target));
-                if (next is not null || Children(row).FirstOrDefault(c => c.IsMore) is not { } more)
-                {
-                    break;
-                }
-                await LoadMoreAsync(more);
-            }
-            row = next;
+            item.ClearValue(Control.BackgroundProperty);
         }
-        return null;
+        else if (item.Foreground is SolidColorBrush text && item.Background is not SolidColorBrush { Opacity: DropTargetOpacity })
+        {
+            item.Background = new SolidColorBrush(text.Color) { Opacity = DropTargetOpacity };
+        }
+    }
+
+    private const double DropTargetOpacity = 0.16;
+
+    private void OnSavedDrop(string file)
+    {
+        if (dragged is not { Count: > 0 } items || draggedFrom is null)
+        {
+            return;
+        }
+        SavedSelection? updated;
+        List<SpNode> added;
+        int already;
+        try
+        {
+            if (savedStore.Load(file) is not { } s || s.ConnectionId != draggedFrom)
+            {
+                return;
+            }
+            var have = s.Items.Select(n => n.Key).ToHashSet();
+            var nodes = items.Select(d => d.Node).DistinctBy(n => n.Key).ToList();
+            added = nodes.Where(n => !have.Contains(n.Key)).ToList();
+            already = nodes.Count - added.Count;
+            updated = savedStore.Add(file, items.Select(d => d.Node), items.Select(d => d.Site), items.Select(d => d.Parent).OfType<SpNode>());
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            ShowError(new InvalidOperationException($"Couldn't add to the saved selection: {ex.Message}"));
+            return;
+        }
+        if (updated is null)
+        {
+            return;
+        }
+        var into = updated;
+        ShowToast(
+            added.Count > 0 ? $"Added to “{into.Name}”" : $"Already in “{into.Name}”",
+            string.Join(" · ", new[]
+            {
+                added.Count > 0 ? Summary(added) : null,
+                already > 0 ? $"{already:N0} already in it" : null,
+                $"{Plural(into.Items.Count, "item", "items")} in all",
+            }.OfType<string>()),
+            shownSaved?.File == file ? null : ("Open", () => Nav.SelectedItem = NavItem(SavedTag + file)),
+            success: added.Count > 0);
+        // the selection on show takes them in too: ticked, as the rest of it
+        if (shownSaved?.File == file)
+        {
+            shownSaved = updated;
+            foreach (var d in items)
+            {
+                selection[d.Node.Key] = d.Node;
+                siteOf[d.Node.Key] = d.Site;
+                if (d.Parent is { } parent)
+                {
+                    parentOf[d.Node.Key] = parent;
+                }
+                foreach (var r in rows.Where(r => r.Node?.Key == d.Node.Key))
+                {
+                    r.SetChecked(true);
+                }
+            }
+            UpdatePane();
+        }
+        // after the drop is done with the item it landed on (its badge shows the new count)
+        DispatcherQueue.TryEnqueue(RefreshSavedSelections);
+    }
+
+    // ---- short confirmations ----
+
+    private Action? toastAction;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? toastTimer;
+
+    /// <summary>A short confirmation at the bottom of the window, gone after a few seconds (or when closed).</summary>
+    private void ShowToast(string title, string message, (string Label, Action Run)? action = null, bool success = true)
+    {
+        Toast.Title = title;
+        Toast.Message = message;
+        Toast.Severity = success ? InfoBarSeverity.Success : InfoBarSeverity.Informational;
+        toastAction = action?.Run;
+        ToastAction.Content = action?.Label;
+        ToastAction.Visibility = action is null ? Visibility.Collapsed : Visibility.Visible;
+        if (Toast.Shadow is null)
+        {
+            // lifted off the page, so it reads as a message rather than part of it
+            Toast.Shadow = new ThemeShadow();
+            Toast.Translation = new System.Numerics.Vector3(0, 0, 32);
+        }
+        Toast.IsOpen = true;
+        toastTimer?.Stop();
+        toastTimer = DispatcherQueue.CreateTimer();
+        toastTimer.Interval = TimeSpan.FromSeconds(6);
+        toastTimer.IsRepeating = false;
+        toastTimer.Tick += (_, _) => Toast.IsOpen = false;
+        toastTimer.Start();
+    }
+
+    private void OnToastAction(object sender, RoutedEventArgs e)
+    {
+        Toast.IsOpen = false;
+        toastAction?.Invoke();
     }
 
     private void OnShowAll(object sender, RoutedEventArgs e)

@@ -133,6 +133,42 @@ public sealed class CommandCatalogTests
         Assert.True(results.Single(r => r.Target.Title == "Docs").Result.Ok);
         Assert.Equal("nope", results.Single(r => r.Target.Title == "Bad").Result.Message);
         Assert.Equal(["Bad=x", "Docs=x"], calls.Order());
+
+        // asked about each: a no isn't run, a yes is, and says when it starts
+        calls.Clear();
+        var started = new List<string>();
+        var asked = new List<string>();
+        results = await CommandRunner.RunAsync(command, nodes, args, client, new NoHost(),
+            started: n => { lock (started) { started.Add(n.Title); } },
+            approve: (n, _) =>
+            {
+                lock (asked)
+                {
+                    asked.Add(n.Title);
+                }
+                return Task.FromResult(n.Title == "Docs");
+            });
+        Assert.Equal(["Bad", "Docs"], asked.Order());
+        Assert.Equal(["Docs"], started);
+        Assert.Equal(["Docs=x"], calls);
+        Assert.True(results.Single(r => r.Target.Title == "Bad").Result is { Ok: true, WasSkipped: true, WasDeclined: true });
+    }
+
+    [Theory]
+    [InlineData("SitePages/Home.aspx", "SitePages/Home.aspx")]
+    [InlineData("/sites/hr/SitePages/News.aspx", "SitePages/News.aspx")]
+    [InlineData("https://contoso.sharepoint.com/sites/hr/SitePages/My%20Page.aspx", "SitePages/My Page.aspx")]
+    [InlineData("/SitePages/Home.aspx", "SitePages/Home.aspx")]
+    public void Home_pages_are_taken_within_the_site(string typed, string page) =>
+        Assert.Equal(page, CommandCatalog.WithinWeb("https://contoso.sharepoint.com/sites/hr", typed));
+
+    [Fact]
+    public void Label_ids_are_guids_or_nothing()
+    {
+        Assert.Equal("", CommandCatalog.LabelId(null));
+        Assert.Equal("", CommandCatalog.LabelId(" "));
+        Assert.Equal("27451a5b-5823-4853-bcd4-2204d03ab477", CommandCatalog.LabelId(" 27451A5B-5823-4853-BCD4-2204D03AB477 "));
+        Assert.Null(CommandCatalog.LabelId("Confidential"));
     }
 
     [Fact]

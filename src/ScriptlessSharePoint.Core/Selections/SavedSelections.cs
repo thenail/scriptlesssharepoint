@@ -7,9 +7,9 @@ namespace ScriptlessSharePoint.Selections;
 
 /// <summary>
 /// Ticked things saved under a name, to come back to: for one connection, the
-/// items and the site collections they're in (so the table can open down to
-/// them again). <see cref="File"/> is the file it's kept in, which also says
-/// which one it is.
+/// items, the site collections they're in, and the row each was ticked under
+/// (so the table can show them again without loading what's around them).
+/// <see cref="File"/> is the file it's kept in, which also says which one it is.
 /// </summary>
 public sealed record SavedSelection
 {
@@ -23,6 +23,9 @@ public sealed record SavedSelection
 
     /// <summary>The site collections the items are in, as the table showed them.</summary>
     public IReadOnlyList<SpNode> Sites { get; init; } = [];
+
+    /// <summary>The subsite, list or folder each item was ticked in, shown above it.</summary>
+    public IReadOnlyList<SpNode> Parents { get; init; } = [];
 }
 
 /// <summary>
@@ -71,7 +74,7 @@ public sealed class SavedSelectionStore(string? folder = null)
     }
 
     /// <summary>A new saved selection, in a file of its own.</summary>
-    public SavedSelection Save(string name, string connectionId, IEnumerable<SpNode> items, IEnumerable<SpNode> sites)
+    public SavedSelection Save(string name, string connectionId, IEnumerable<SpNode> items, IEnumerable<SpNode> sites, IEnumerable<SpNode>? parents = null)
     {
         var saved = new SavedSelection
         {
@@ -80,10 +83,52 @@ public sealed class SavedSelectionStore(string? folder = null)
             Saved = DateTimeOffset.Now,
             Items = items.DistinctBy(n => n.Key).ToList(),
             Sites = sites.DistinctBy(n => n.Key).ToList(),
+            Parents = (parents ?? []).DistinctBy(n => n.Key).ToList(),
         };
         var file = Path.Combine(Folder, $"{saved.Saved:yyyyMMdd-HHmmss}-{Guid.NewGuid().ToString("n")[..8]}.json");
         Write(saved with { File = file });
         return saved with { File = file };
+    }
+
+    /// <summary>
+    /// Adds items to a saved selection, with the site collections and parents
+    /// they're shown under; what's in it already stays as it is. Null when the
+    /// selection is gone.
+    /// </summary>
+    public SavedSelection? Add(string file, IEnumerable<SpNode> items, IEnumerable<SpNode> sites, IEnumerable<SpNode> parents)
+    {
+        if (Load(file) is not { } saved)
+        {
+            return null;
+        }
+        var added = saved with
+        {
+            Items = saved.Items.Concat(items).DistinctBy(n => n.Key).ToList(),
+            Sites = saved.Sites.Concat(sites).DistinctBy(n => n.Key).ToList(),
+            Parents = saved.Parents.Concat(parents).DistinctBy(n => n.Key).ToList(),
+        };
+        Write(added);
+        return added;
+    }
+
+    /// <summary>
+    /// Replaces what a saved selection holds (its name and place in the list
+    /// stay). Null when the selection is gone.
+    /// </summary>
+    public SavedSelection? Update(string file, IEnumerable<SpNode> items, IEnumerable<SpNode> sites, IEnumerable<SpNode> parents)
+    {
+        if (Load(file) is not { } saved)
+        {
+            return null;
+        }
+        var updated = saved with
+        {
+            Items = items.DistinctBy(n => n.Key).ToList(),
+            Sites = sites.DistinctBy(n => n.Key).ToList(),
+            Parents = parents.DistinctBy(n => n.Key).ToList(),
+        };
+        Write(updated);
+        return updated;
     }
 
     public SavedSelection? Rename(string file, string name)

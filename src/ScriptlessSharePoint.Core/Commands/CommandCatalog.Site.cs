@@ -11,6 +11,10 @@ namespace ScriptlessSharePoint.Commands;
 /// <summary>Site collections, as the admin centre manages them (Set-SPOSite and friends).</summary>
 public static partial class CommandCatalog
 {
+    /// <summary>A sensitivity label's ID as typed: "" for none, null when it isn't a GUID.</summary>
+    internal static string? LabelId(string? text) =>
+        string.IsNullOrWhiteSpace(text) ? "" : Guid.TryParse(text.Trim(), out var id) ? id.ToString() : null;
+
     private static IEnumerable<Command> SiteCollection()
     {
         // ---- settings ----
@@ -122,6 +126,119 @@ public static partial class CommandCatalog
                 c.Args.Toggle("allow") ? "Comments allowed." : "Comments turned off."),
         };
 
+        yield return new Command
+        {
+            Id = "site.versions",
+            Title = "Version history limits",
+            Group = "Versions",
+            Description = "How many versions document libraries keep, and for how long: the tenant's setting, automatic (SharePoint trims by age and use), or set limits. Applying it to existing libraries runs as a job in the background.",
+            PowerShell = "Set-SPOSite -EnableAutoExpirationVersionTrim -MajorVersionLimit -ExpireVersionsAfterDays",
+            Targets = Sites,
+            NeedsAdmin = true,
+            Glyph = "\uE81C",
+            Parameters =
+            [
+                new("mode", "Limits", ParameterKind.Choice)
+                {
+                    Default = "tenant",
+                    Choices = [new("tenant", "The tenant's setting"), new("auto", "Automatic"), new("manual", "Set limits")],
+                },
+                new("major", "Major versions to keep", ParameterKind.Number) { Default = "500", Min = 1, Max = 50000, ShowIf = new ShowIf("mode", "manual") },
+                new("days", "Delete versions older than (days)", ParameterKind.Number)
+                {
+                    Required = false,
+                    Min = 30,
+                    Max = 36500,
+                    Hint = "Empty: they don't expire by age.",
+                    ShowIf = new ShowIf("mode", "manual"),
+                },
+                new("apply", "Apply to", ParameterKind.Choice)
+                {
+                    Default = "new",
+                    Choices = [new("new", "New libraries"), new("all", "New and existing libraries")],
+                    ShowIf = new ShowIf("mode", "auto", "manual"),
+                },
+            ],
+            Run = (c, n) => c.UpdateSiteAsync(n, p =>
+            {
+                switch (c.Args.Text("mode"))
+                {
+                    case "tenant":
+                        p.InheritVersionPolicyFromTenant = true;
+                        return;
+                    case "auto":
+                        p.EnableAutoExpirationVersionTrim = true;
+                        break;
+                    default:
+                        p.EnableAutoExpirationVersionTrim = false;
+                        p.MajorVersionLimit = (int)c.Args.Number("major");
+                        p.ExpireVersionsAfterDays = c.Args["days"] is null ? 0 : (int)c.Args.Number("days");
+                        break;
+                }
+                p.ApplyToNewDocumentLibraries = true;
+                p.ApplyToExistingDocumentLibraries = c.Args.Text("apply") == "all";
+            }, c.Args.Text("mode") switch
+            {
+                "tenant" => "Follows the tenant's version limits.",
+                "auto" => "Versions are trimmed automatically.",
+                _ => $"Keeps {c.Args.Number("major"):N0} versions{(c.Args["days"] is null ? "" : $", for {c.Args.Number("days"):N0} days")}.",
+            }),
+        };
+
+        yield return new Command
+        {
+            Id = "site.flows",
+            Title = "Power Automate flows",
+            Group = "Settings",
+            Description = "Whether people can create flows for the site's lists and libraries.",
+            PowerShell = "Set-SPOSite -DisableFlows",
+            Targets = Sites,
+            NeedsAdmin = true,
+            Glyph = "\uE945",
+            Parameters = [Toggle("allow", "Allow flows", true)],
+            Run = (c, n) => c.UpdateSiteAsync(n, p => p.DisableFlows = c.Args.Toggle("allow") ? FlowsPolicy.NotDisabled : FlowsPolicy.Disabled,
+                c.Args.Toggle("allow") ? "Flows allowed." : "Flows turned off."),
+        };
+
+        yield return new Command
+        {
+            Id = "site.social-bar",
+            Title = "Likes, views and saves on pages",
+            Group = "Settings",
+            Description = "Whether the site's pages show the bar with likes, comments, views and Save for later.",
+            PowerShell = "Set-SPOSite -SocialBarOnSitePagesDisabled",
+            Targets = Sites,
+            NeedsAdmin = true,
+            Glyph = "\uE8E1",
+            Parameters = [Toggle("show", "Show the bar", true)],
+            Run = (c, n) => c.UpdateSiteAsync(n, p => p.SocialBarOnSitePagesDisabled = !c.Args.Toggle("show"),
+                c.Args.Toggle("show") ? "The bar shows." : "The bar is hidden."),
+        };
+
+        yield return new Command
+        {
+            Id = "site.label",
+            Title = "Sensitivity label",
+            Group = "Settings",
+            Description = "Puts a sensitivity label on each site collection, or takes it off. The label has to be published for sites in Microsoft Purview.",
+            PowerShell = "Set-SPOSite -SensitivityLabel",
+            Targets = Sites,
+            NeedsAdmin = true,
+            Glyph = "\uEA18",
+            Parameters =
+            [
+                new("label", "Label ID", ParameterKind.Text)
+                {
+                    Required = false,
+                    Placeholder = "27451a5b-5823-4853-bcd4-2204d03ab477",
+                    Hint = "The label's ID (a GUID), from Purview or Get-Label. Empty takes the label off.",
+                },
+            ],
+            Run = (c, n) => LabelId(c.Args["label"]) is not { } label
+                ? Task.FromResult(CommandResult.Failed("The label ID isn't a GUID."))
+                : c.UpdateSiteAsync(n, p => p.SensitivityLabel2 = label, label.Length == 0 ? "Label taken off." : "Label applied."),
+        };
+
         // ---- sharing ----
 
         yield return new Command
@@ -174,6 +291,101 @@ public static partial class CommandCatalog
             Run = (c, n) => c.UpdateSiteAsync(n,
                 p => p.DisableCompanyWideSharingLinks = c.Args.Toggle("allow") ? CompanyWideSharingLinksPolicy.NotDisabled : CompanyWideSharingLinksPolicy.Disabled,
                 c.Args.Toggle("allow") ? "Organisation links allowed." : "Organisation links turned off."),
+        };
+
+        yield return new Command
+        {
+            Id = "site.domains",
+            Title = "Guests from some domains only",
+            Group = "Sharing",
+            Description = "Limits sharing with guests to some email domains, or blocks some, in each site.",
+            PowerShell = "Set-SPOSite -SharingDomainRestrictionMode -SharingAllowedDomainList -SharingBlockedDomainList",
+            Targets = Sites,
+            NeedsAdmin = true,
+            Glyph = "\uE774",
+            Parameters =
+            [
+                new("mode", "Guests", ParameterKind.Choice)
+                {
+                    Default = nameof(SharingDomainRestrictionModes.None),
+                    Choices =
+                    [
+                        new(nameof(SharingDomainRestrictionModes.None), "From any domain"),
+                        new(nameof(SharingDomainRestrictionModes.AllowList), "Only from these domains"),
+                        new(nameof(SharingDomainRestrictionModes.BlockList), "From any domain but these"),
+                    ],
+                },
+                new("domains", "Domains", ParameterKind.LongText)
+                {
+                    Placeholder = "fabrikam.com",
+                    Hint = "One per line, or separated by spaces.",
+                    ShowIf = new ShowIf("mode", nameof(SharingDomainRestrictionModes.AllowList), nameof(SharingDomainRestrictionModes.BlockList)),
+                },
+            ],
+            Run = (c, n) =>
+            {
+                var mode = c.Args.Enum<SharingDomainRestrictionModes>("mode");
+                var domains = string.Join(" ", (c.Args["domains"] ?? "").Split([' ', '\n', '\r', ',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+                return c.UpdateSiteAsync(n, p =>
+                {
+                    p.SharingDomainRestrictionMode = mode;
+                    if (mode == SharingDomainRestrictionModes.AllowList)
+                    {
+                        p.SharingAllowedDomainList = domains;
+                    }
+                    else if (mode == SharingDomainRestrictionModes.BlockList)
+                    {
+                        p.SharingBlockedDomainList = domains;
+                    }
+                }, mode switch
+                {
+                    SharingDomainRestrictionModes.AllowList => $"Guests only from {domains}.",
+                    SharingDomainRestrictionModes.BlockList => $"Guests from anywhere but {domains}.",
+                    _ => "Guests from any domain.",
+                });
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "site.anyone-expiry",
+            Title = "\"Anyone\" links expire",
+            Group = "Sharing",
+            Description = "How many days links that need no sign-in keep working, in these sites. Empty follows the tenant's setting.",
+            PowerShell = "Set-SPOSite -AnonymousLinkExpirationInDays -OverrideTenantAnonymousLinkExpirationPolicy",
+            Targets = Sites,
+            NeedsAdmin = true,
+            Glyph = "\uE916",
+            Parameters = [new("days", "Expire after (days)", ParameterKind.Number) { Required = false, Min = 1, Max = 730, Hint = "Empty: the tenant's setting." }],
+            Run = (c, n) => c.UpdateSiteAsync(n, p =>
+            {
+                p.OverrideTenantAnonymousLinkExpirationPolicy = c.Args["days"] is not null;
+                if (c.Args["days"] is not null)
+                {
+                    p.AnonymousLinkExpirationInDays = (int)c.Args.Number("days");
+                }
+            }, c.Args["days"] is null ? "Follows the tenant's setting." : $"\"Anyone\" links expire after {c.Args.Number("days"):N0} days."),
+        };
+
+        yield return new Command
+        {
+            Id = "site.guest-expiry",
+            Title = "Guest access expires",
+            Group = "Sharing",
+            Description = "How many days guests keep access to these sites before an owner has to renew it. Empty follows the tenant's setting.",
+            PowerShell = "Set-SPOSite -ExternalUserExpirationInDays -OverrideTenantExternalUserExpirationPolicy",
+            Targets = Sites,
+            NeedsAdmin = true,
+            Glyph = "\uE916",
+            Parameters = [new("days", "Expire after (days)", ParameterKind.Number) { Required = false, Min = 30, Max = 730, Hint = "Empty: the tenant's setting." }],
+            Run = (c, n) => c.UpdateSiteAsync(n, p =>
+            {
+                p.OverrideTenantExternalUserExpirationPolicy = c.Args["days"] is not null;
+                if (c.Args["days"] is not null)
+                {
+                    p.ExternalUserExpirationInDays = (int)c.Args.Number("days");
+                }
+            }, c.Args["days"] is null ? "Follows the tenant's setting." : $"Guest access expires after {c.Args.Number("days"):N0} days."),
         };
 
         // ---- administrators ----

@@ -14,6 +14,9 @@ public static class CommandRunner
     /// <summary>
     /// Runs <paramref name="command"/> on each target it applies to. A target's
     /// failure is its result, not the run's; cancelling stops targets not yet started.
+    /// <paramref name="started"/> hears of each target as it starts.
+    /// With <paramref name="approve"/>, each target waits for it (in any order,
+    /// before taking its turn) and is <see cref="CommandResult.Declined"/> on no.
     /// </summary>
     public static async Task<IReadOnlyList<TargetResult>> RunAsync(
         Command command,
@@ -22,9 +25,11 @@ public static class CommandRunner
         SharePointClient client,
         ICommandHost host,
         IProgress<TargetResult>? progress = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Action<SpNode>? started = null,
+        Func<SpNode, CancellationToken, Task<bool>>? approve = null)
     {
-        if (command.Check(args) is { Count: > 0 } problems)
+        if (command.Check(args, targets.Where(t => command.AppliesTo(t.Kind)).Select(t => t.Kind)) is { Count: > 0 } problems)
         {
             throw new ArgumentException(string.Join(" ", problems));
         }
@@ -35,6 +40,24 @@ public static class CommandRunner
 
         var tasks = applicable.Select(async (target, i) =>
         {
+            if (approve is not null)
+            {
+                bool yes;
+                try
+                {
+                    yes = await approve(target, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    yes = false;
+                }
+                if (!yes || ct.IsCancellationRequested)
+                {
+                    results[i] = new TargetResult(target, ct.IsCancellationRequested ? CommandResult.Failed("Cancelled.") : CommandResult.Declined());
+                    progress?.Report(results[i]);
+                    return;
+                }
+            }
             await gate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
@@ -42,6 +65,7 @@ public static class CommandRunner
                 try
                 {
                     ct.ThrowIfCancellationRequested();
+                    started?.Invoke(target);
                     result = await SharePointClient.RetryAsync(() => command.Run(context, target), ct).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)

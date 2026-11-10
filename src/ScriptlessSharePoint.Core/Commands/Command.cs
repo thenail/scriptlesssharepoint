@@ -28,6 +28,9 @@ public enum ParameterKind
 
 public sealed record Choice(string Value, string Label);
 
+/// <summary>An input that only applies when another one has one of these values.</summary>
+public sealed record ShowIf(string Parameter, params string[] Values);
+
 /// <summary>An input a command asks for in the pane before it runs.</summary>
 public sealed record CommandParameter(string Name, string Label, ParameterKind Kind)
 {
@@ -38,6 +41,17 @@ public sealed record CommandParameter(string Name, string Label, ParameterKind K
     public IReadOnlyList<Choice> Choices { get; init; } = [];
     public long? Min { get; init; }
     public long? Max { get; init; }
+
+    /// <summary>Only asked for when another input has one of these values; otherwise hidden, not checked, not sent.</summary>
+    public ShowIf? ShowIf { get; init; }
+
+    /// <summary>Only asked for when the command runs on these kinds (null: on any).</summary>
+    public IReadOnlyList<NodeKind>? ForKinds { get; init; }
+
+    /// <summary>Whether the input applies, given the other values and (when known) what the command runs on.</summary>
+    public bool IsShown(CommandArgs args, NodeKind? kind = null) =>
+        (ShowIf is not { } s || s.Values.Contains(args[s.Parameter])) &&
+        (kind is not { } k || ForKinds is null || ForKinds.Contains(k));
 
     /// <summary>What's wrong with a value, or null when it will do.</summary>
     public string? Check(string? value)
@@ -114,11 +128,20 @@ public sealed record CommandResult(bool Ok, string Message, string? Detail = nul
     public static CommandResult Skipped(string message) => new(true, message) { WasSkipped = true };
     public static CommandResult Failed(string message) => new(false, message);
 
-    /// <summary>Nothing needed doing (already so).</summary>
+    /// <summary>Asked to confirm it, the user said no: it didn't run.</summary>
+    public static CommandResult Declined() => new(true, "Not run: skipped.") { WasSkipped = true, WasDeclined = true };
+
+    /// <summary>Nothing needed doing (already so), or it wasn't run (<see cref="WasDeclined"/>).</summary>
     public bool WasSkipped { get; init; }
+
+    /// <summary>The user said no to running it.</summary>
+    public bool WasDeclined { get; init; }
 
     /// <summary>The target as it is now (renamed): the table shows it so.</summary>
     public SpNode? Updated { get; init; }
+
+    /// <summary>What a finder found inside the target (<see cref="After.Tick"/>).</summary>
+    public IReadOnlyList<FoundNode> Found { get; init; } = [];
 }
 
 /// <summary>What the table does with a row after a command ran on it.</summary>
@@ -134,6 +157,8 @@ public enum After
     Remove,
     /// <summary>The site collection list changed (a new or restored site): load it again.</summary>
     ReloadSites,
+    /// <summary>Found things inside the targets: what the results found becomes the selection.</summary>
+    Tick,
 }
 
 /// <summary>What commands may ask of the app.</summary>
@@ -198,9 +223,20 @@ public sealed class Command
 
     public bool AppliesTo(NodeKind kind) => Targets.Contains(kind);
 
-    /// <summary>The problems with a set of values, one per parameter that has one.</summary>
-    public IReadOnlyList<string> Check(CommandArgs args) =>
-        Parameters.Select(p => p.Check(args[p.Name])).OfType<string>().ToList();
+    /// <summary>
+    /// The problems with a set of values, one per parameter that has one. Inputs
+    /// that don't apply (to another value, or to any of <paramref name="kinds"/>,
+    /// when given) aren't checked.
+    /// </summary>
+    public IReadOnlyList<string> Check(CommandArgs args, IEnumerable<NodeKind>? kinds = null)
+    {
+        var on = kinds?.ToHashSet();
+        return Parameters
+            .Where(p => p.IsShown(args) && (on is null || p.ForKinds is null || p.ForKinds.Any(on.Contains)))
+            .Select(p => p.Check(args[p.Name]))
+            .OfType<string>()
+            .ToList();
+    }
 
     /// <summary>Default values for the parameters that have them.</summary>
     public CommandArgs Defaults()

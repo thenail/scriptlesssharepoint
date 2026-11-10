@@ -66,6 +66,11 @@
             </NavigationView.PaneHeader>
 
             <NavigationView.FooterMenuItems>
+                <NavigationViewItem x:Name="HistoryItem" Content="History" Tag="history">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE81C;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem x:Name="AddConnectionItem" Content="Add a connection" SelectsOnInvoked="False">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE710;" />
@@ -196,6 +201,9 @@
                                 <ListView x:Name="Table"
                                           Grid.Row="1"
                                           SelectionMode="None"
+                                          CanDragItems="True"
+                                          DragItemsStarting="OnRowsDragStarting"
+                                          DragItemsCompleted="OnRowsDragCompleted"
                                           ItemContainerStyle="{StaticResource TableRow}">
                                     <ListView.ItemTemplate>
                                         <DataTemplate x:DataType="local:Row">
@@ -270,10 +278,20 @@
                                             <TextBlock x:Name="SelectedSummary" Style="{StaticResource CaptionSecondary}" />
                                         </StackPanel>
                                         <HyperlinkButton x:Name="ClearButton" Grid.Column="1" Content="Clear" Padding="6,4,6,4" VerticalAlignment="Center" Click="OnClearSelection" Visibility="Collapsed" />
-                                        <Button x:Name="SaveSelectionButton" Grid.Column="2" Style="{StaticResource ToolButton}" Width="32" Click="OnSaveSelection"
-                                                Visibility="Collapsed" ToolTipService.ToolTip="Save the selection (Ctrl+S)" AutomationProperties.Name="Save the selection">
+                                        <SplitButton x:Name="SaveSelectionButton" Grid.Column="2" Background="Transparent" BorderBrush="Transparent"
+                                                     Height="32" Padding="8,0,8,0" Click="OnSaveSelection" VerticalAlignment="Center"
+                                                     Visibility="Collapsed" ToolTipService.ToolTip="Save the selection (Ctrl+S)" AutomationProperties.Name="Save the selection">
                                             <FontIcon Glyph="&#xE74E;" FontSize="14" />
-                                        </Button>
+                                            <SplitButton.Flyout>
+                                                <MenuFlyout Placement="BottomEdgeAlignedRight">
+                                                    <MenuFlyoutItem Text="Save as a new selection…" KeyboardAcceleratorTextOverride="Ctrl+Shift+S" Click="OnSaveSelectionAsNew">
+                                                        <MenuFlyoutItem.Icon>
+                                                            <FontIcon Glyph="&#xE792;" />
+                                                        </MenuFlyoutItem.Icon>
+                                                    </MenuFlyoutItem>
+                                                </MenuFlyout>
+                                            </SplitButton.Flyout>
+                                        </SplitButton>
                                         <Button Grid.Column="3" Style="{StaticResource ToolButton}" Width="32" Click="OnHidePane" ToolTipService.ToolTip="Hide" AutomationProperties.Name="Hide the pane">
                                             <FontIcon Glyph="&#xE76C;" FontSize="12" />
                                         </Button>
@@ -347,6 +365,7 @@
                                     </Grid.RowDefinitions>
                                     <StackPanel Padding="16,0,16,0" Spacing="6">
                                         <TextBlock x:Name="ResultsTitle" Style="{StaticResource BodyStrongTextBlockStyle}" TextWrapping="Wrap" />
+                                        <TextBlock x:Name="ResultsInputs" Style="{StaticResource CaptionSecondary}" TextWrapping="Wrap" IsTextSelectionEnabled="True" Visibility="Collapsed" />
                                         <TextBlock x:Name="ResultsSummary" Style="{StaticResource CaptionSecondary}" />
                                         <ProgressBar x:Name="ResultsBar" />
                                     </StackPanel>
@@ -356,6 +375,8 @@
                                             <Button x:Name="CopyResultsButton" Content="Copy" Click="OnCopyResults" ToolTipService.ToolTip="Copy the results as text" AutomationProperties.Name="Copy the results as text" />
                                             <Button x:Name="SelectFailedButton" Content="Tick the failed ones" Click="OnSelectFailed" Visibility="Collapsed" />
                                             <Button x:Name="CancelRunButton" Content="Cancel" Click="OnCancelRun" />
+                                            <Button x:Name="RunAllButton" Content="Run all" Click="OnRunAll" Visibility="Collapsed"
+                                                    ToolTipService.ToolTip="Run it on every one still waiting to be confirmed" />
                                             <Button x:Name="DoneButton" Content="Done" Style="{StaticResource AccentButtonStyle}" Click="OnResultsDone" Visibility="Collapsed" />
                                         </StackPanel>
                                     </Border>
@@ -365,10 +386,97 @@
                     </Grid>
                 </Grid>
 
+                <!-- ================= History ================= -->
+                <Grid x:Name="HistoryPage" Padding="36,0,36,24" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid Margin="0,0,0,20">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="History" Style="{StaticResource PageTitle}" />
+                            <TextBlock Style="{StaticResource CaptionSecondary}"
+                                       Text="Every command run from the app, newest first: the last 500, kept on this PC." />
+                        </StackPanel>
+                        <Button x:Name="ClearHistoryButton" Grid.Column="1" Content="Clear history" Click="OnClearHistory" VerticalAlignment="Center" />
+                    </Grid>
+
+                    <Grid Grid.Row="1" ColumnSpacing="16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="380" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Border Style="{StaticResource Card}">
+                            <Grid>
+                                <ListView x:Name="HistoryList" SelectionMode="Single" Padding="4" SelectionChanged="OnHistoryPicked" />
+                                <TextBlock x:Name="HistoryEmpty" Style="{StaticResource CaptionSecondary}" TextWrapping="Wrap" Margin="20" Visibility="Collapsed"
+                                           Text="Nothing yet. Commands you run show up here, with how each target went." />
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Column="1" Style="{StaticResource Card}">
+                            <Grid x:Name="RunDetail" RowSpacing="8" Padding="0,16,0,0" Visibility="Collapsed">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <StackPanel Padding="20,0,20,4" Spacing="4">
+                                    <TextBlock x:Name="RunTitle" Style="{StaticResource SubtitleTextBlockStyle}" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="RunWhen" Style="{StaticResource CaptionSecondary}" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="RunInputs" Style="{StaticResource CaptionSecondary}" TextWrapping="Wrap" IsTextSelectionEnabled="True" Margin="0,6,0,0" />
+                                    <TextBlock x:Name="RunSummaryText" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,6,0,0" />
+                                </StackPanel>
+                                <ListView x:Name="RunTargets" Grid.Row="1" SelectionMode="None" Padding="8,0,8,0" />
+                                <Border Grid.Row="2" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,1,0,0" Padding="20,12,20,14">
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <Button Content="Copy" Click="OnCopyRun" ToolTipService.ToolTip="Copy the run as text" />
+                                            <Button Content="Delete" Click="OnDeleteRun" ToolTipService.ToolTip="Remove this run from the history" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                                            <Button x:Name="TickRunFailedButton" Content="Tick the failed ones" Click="OnTickRunFailed" />
+                                            <Button x:Name="TickRunButton" Content="Tick these" Click="OnTickRun"
+                                                    ToolTipService.ToolTip="Show its targets ticked in the connection's table" />
+                                            <Button x:Name="RunAgainButton" Content="Run again…" Style="{StaticResource AccentButtonStyle}" Click="OnRunAgain" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </Grid>
+
                 <!-- ================= Settings ================= -->
                 <ScrollViewer x:Name="SettingsPage" Visibility="Collapsed">
                     <StackPanel Padding="36,0,36,28" MaxWidth="1000" HorizontalAlignment="Left" MinWidth="560">
                         <TextBlock Text="Settings" Style="{StaticResource PageTitle}" Margin="0,0,0,4" />
+
+                        <TextBlock Text="Commands" Style="{StaticResource GroupHeader}" />
+                        <Border Style="{StaticResource Card}" CornerRadius="{ThemeResource ControlCornerRadius}" Padding="16,14,16,14">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Confirm every change" />
+                                    <TextBlock Style="{StaticResource CaptionSecondary}" TextWrapping="Wrap"
+                                               Text="Commands that change SharePoint ask about each item before running on it: Run or Skip, one by one, or Run all. When this is off, commands that delete, or run on many items, still ask once first." />
+                                </StackPanel>
+                                <ToggleSwitch x:Name="ConfirmChangesSwitch" Grid.Column="1" OnContent="On" OffContent="Off" MinWidth="0"
+                                              VerticalAlignment="Center" Toggled="OnConfirmChangesToggled"
+                                              AutomationProperties.Name="Confirm every change" />
+                            </Grid>
+                        </Border>
 
                         <TextBlock Text="AI apps" Style="{StaticResource GroupHeader}" />
                         <TextBlock Style="{StaticResource CaptionSecondary}" Margin="1,0,0,10"
@@ -402,5 +510,13 @@
                 </ScrollViewer>
             </Grid>
         </NavigationView>
+
+        <!-- Short confirmations (e.g. items added to a saved selection), over the page -->
+        <InfoBar x:Name="Toast" Grid.Row="1" Severity="Success" IsOpen="False" IsClosable="True"
+                 HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,28" MinWidth="360" MaxWidth="620">
+            <InfoBar.ActionButton>
+                <Button x:Name="ToastAction" Click="OnToastAction" Visibility="Collapsed" />
+            </InfoBar.ActionButton>
+        </InfoBar>
     </Grid>
 </Window>

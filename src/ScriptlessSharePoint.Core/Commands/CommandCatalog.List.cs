@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security;
 
 using Microsoft.SharePoint.Client;
@@ -105,15 +106,18 @@ public static partial class CommandCatalog
             Glyph = "\uE72C",
             Run = async (c, n) =>
             {
-                using var ctx = await c.WebAsync(n).ConfigureAwait(false);
-                var folder = Csom.List(ctx, n).RootFolder;
-                ctx.Load(folder.Properties);
-                await ctx.RunAsync().ConfigureAwait(false);
-                var version = folder.Properties.FieldValues.TryGetValue("vti_searchversion", out var v) && int.TryParse(v?.ToString(), out var i) ? i : 0;
-                folder.Properties["vti_searchversion"] = version + 1;
-                folder.Update();
-                await ctx.RunAsync().ConfigureAwait(false);
-                return CommandResult.Done("Search will crawl it again.");
+                var allowed = await c.WithScriptsAsync(n, async () =>
+                {
+                    using var ctx = await c.WebAsync(n).ConfigureAwait(false);
+                    var folder = Csom.List(ctx, n).RootFolder;
+                    ctx.Load(folder.Properties);
+                    await ctx.RunAsync().ConfigureAwait(false);
+                    var version = folder.Properties.FieldValues.TryGetValue("vti_searchversion", out var v) && int.TryParse(v?.ToString(), out var i) ? i : 0;
+                    folder.Properties["vti_searchversion"] = version + 1;
+                    folder.Update();
+                    await ctx.RunAsync().ConfigureAwait(false);
+                }).ConfigureAwait(false);
+                return CommandResult.Done(Csom.ScriptsNote("Search will crawl it again.", allowed));
             },
         };
 
@@ -154,6 +158,171 @@ public static partial class CommandCatalog
                 await ctx.RunAsync().ConfigureAwait(false);
                 return CommandResult.Done($"Added the column {name}.");
             },
+        };
+
+        yield return new Command
+        {
+            Id = "list.columns",
+            Title = "List columns",
+            Group = "Details",
+            Description = "Each list's columns: the name shown, the internal name (for Set a column's value) and the type.",
+            PowerShell = "Get-PnPField",
+            Targets = Lists,
+            ReadOnly = true,
+            Glyph = "\uE8FD",
+            Run = async (c, n) =>
+            {
+                using var ctx = await c.WebAsync(n).ConfigureAwait(false);
+                var fields = Csom.List(ctx, n).Fields;
+                ctx.Load(fields, fs => fs.Include(f => f.Title, f => f.InternalName, f => f.TypeDisplayName, f => f.Hidden));
+                await ctx.RunAsync().ConfigureAwait(false);
+                var shown = fields.Where(f => !f.Hidden).OrderBy(f => f.Title, StringComparer.CurrentCultureIgnoreCase).ToList();
+                return CommandResult.Done($"{shown.Count} columns.",
+                    string.Join(Environment.NewLine, shown.Select(f => $"{f.Title}  ·  {f.InternalName}  ·  {f.TypeDisplayName}")));
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "list.delete-column",
+            Title = "Delete a column",
+            Group = "Settings",
+            Description = "Deletes a column, and its values, from each list or library.",
+            PowerShell = "Remove-PnPField",
+            Targets = Lists,
+            Destructive = true,
+            Glyph = "\uE74D",
+            Parameters = [new("name", "Column", ParameterKind.Text) { Hint = "Its name as shown, or its internal name." }],
+            Run = async (c, n) =>
+            {
+                var name = c.Args.Text("name").Trim();
+                using var ctx = await c.WebAsync(n).ConfigureAwait(false);
+                var field = Csom.List(ctx, n).Fields.GetByInternalNameOrTitle(name);
+                ctx.Load(field, f => f.CanBeDeleted, f => f.Title);
+                try
+                {
+                    await ctx.RunAsync().ConfigureAwait(false);
+                }
+                catch (ServerException e) when (e.ServerErrorTypeName == "System.ArgumentException")
+                {
+                    return CommandResult.Skipped($"It has no column {name}.");
+                }
+                if (!field.CanBeDeleted)
+                {
+                    return CommandResult.Failed($"SharePoint doesn't let {field.Title} be deleted.");
+                }
+                field.DeleteObject();
+                await ctx.RunAsync().ConfigureAwait(false);
+                return CommandResult.Done($"Deleted {field.Title}.");
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "list.experience",
+            Title = "Modern or classic",
+            Group = "Settings",
+            Description = "Whether each list opens in the modern or the classic experience.",
+            PowerShell = "Set-PnPList -ListExperience",
+            Targets = Lists,
+            Glyph = "\uE7F4",
+            Parameters =
+            [
+                new("experience", "Opens in", ParameterKind.Choice)
+                {
+                    Default = nameof(ListExperience.NewExperience),
+                    Choices =
+                    [
+                        new(nameof(ListExperience.NewExperience), "Modern"),
+                        new(nameof(ListExperience.ClassicExperience), "Classic"),
+                        new(nameof(ListExperience.Auto), "As the site decides"),
+                    ],
+                },
+            ],
+            Run = (c, n) => ChangeListAsync(c, n, l => l.ListExperienceOptions = c.Args.Enum<ListExperience>("experience"), "Changed."),
+        };
+
+        yield return new Command
+        {
+            Id = "list.open-in",
+            Title = "Open documents in",
+            Group = "Settings",
+            Description = "Whether documents in each library open in the browser or in the desktop app.",
+            PowerShell = "Set-PnPList -OpenDocumentsMode",
+            Targets = Libraries,
+            Glyph = "\uE8A7",
+            Parameters = [new("mode", "Open in", ParameterKind.Choice) { Default = "browser", Choices = [new("browser", "The browser"), new("client", "The desktop app")] }],
+            Run = (c, n) => ChangeListAsync(c, n, l => l.DefaultItemOpenInBrowser = c.Args.Text("mode") == "browser",
+                c.Args.Text("mode") == "browser" ? "Opens in the browser." : "Opens in the desktop app."),
+        };
+
+        yield return new Command
+        {
+            Id = "list.drafts",
+            Title = "Who sees drafts",
+            Group = "Versions",
+            Description = "Who can see draft (minor or unapproved) versions in each list or library.",
+            PowerShell = "Set-PnPList -DraftVersionVisibility",
+            Targets = Lists,
+            Glyph = "\uE7B3",
+            Parameters =
+            [
+                new("who", "Drafts are seen by", ParameterKind.Choice)
+                {
+                    Default = nameof(DraftVisibilityType.Author),
+                    Choices =
+                    [
+                        new(nameof(DraftVisibilityType.Reader), "Anyone who can read the list"),
+                        new(nameof(DraftVisibilityType.Author), "Only people who can edit"),
+                        new(nameof(DraftVisibilityType.Approver), "Only people who can approve, and the author"),
+                    ],
+                },
+            ],
+            Run = (c, n) => ChangeListAsync(c, n, l => l.DraftVersionVisibility = c.Args.Enum<DraftVisibilityType>("who"), "Changed who sees drafts."),
+        };
+
+        yield return new Command
+        {
+            Id = "list.item-access",
+            Title = "Item-level access",
+            Group = "Permissions",
+            Description = "Whether people can read and edit everyone's items in each list, or only their own (the list's advanced settings).",
+            PowerShell = "Set-PnPList -ReadSecurity -WriteSecurity",
+            Targets = ListsOnly,
+            Glyph = "\uE8D7",
+            Parameters =
+            [
+                new("read", "Read", ParameterKind.Choice) { Default = "1", Choices = [new("1", "All items"), new("2", "Only their own")] },
+                new("write", "Create and edit", ParameterKind.Choice) { Default = "1", Choices = [new("1", "All items"), new("2", "Only their own"), new("4", "None")] },
+            ],
+            Run = (c, n) => ChangeListAsync(c, n, l =>
+            {
+                l.ReadSecurity = int.Parse(c.Args.Text("read"), CultureInfo.InvariantCulture);
+                l.WriteSecurity = int.Parse(c.Args.Text("write"), CultureInfo.InvariantCulture);
+            }, "Changed item-level access."),
+        };
+
+        yield return new Command
+        {
+            Id = "list.label",
+            Title = "Default sensitivity label",
+            Group = "Settings",
+            Description = "The sensitivity label files in each library get unless they have one. Empty takes it off.",
+            PowerShell = "Set-PnPList -DefaultSensitivityLabelForLibrary",
+            Targets = Libraries,
+            Glyph = "\uEA18",
+            Parameters =
+            [
+                new("label", "Label ID", ParameterKind.Text)
+                {
+                    Required = false,
+                    Placeholder = "27451a5b-5823-4853-bcd4-2204d03ab477",
+                    Hint = "The label's ID (a GUID), from Purview or Get-Label. Empty takes it off.",
+                },
+            ],
+            Run = (c, n) => LabelId(c.Args["label"]) is not { } label
+                ? Task.FromResult(CommandResult.Failed("The label ID isn't a GUID."))
+                : ChangeListAsync(c, n, l => l.DefaultSensitivityLabelForLibrary = label, label.Length == 0 ? "Label taken off." : "Label set."),
         };
 
         yield return new Command

@@ -11,6 +11,7 @@ using ScriptlessSharePoint.Auth;
 using ScriptlessSharePoint.Commands;
 using ScriptlessSharePoint.Connections;
 using ScriptlessSharePoint.Diagnostics;
+using ScriptlessSharePoint.Settings;
 using ScriptlessSharePoint.SharePoint;
 
 using Windows.ApplicationModel.DataTransfer;
@@ -56,6 +57,7 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         AddAccelerator(VirtualKey.F5, VirtualKeyModifiers.None, () => OnRefresh(this, new RoutedEventArgs()));
         AddAccelerator(VirtualKey.F, VirtualKeyModifiers.Control, () => SearchBox.Focus(FocusState.Keyboard));
         AddAccelerator(VirtualKey.S, VirtualKeyModifiers.Control, () => _ = SaveSelectionAsync());
+        AddAccelerator(VirtualKey.S, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => _ = SaveSelectionAsync(asNew: true));
         Root.Loaded += (_, _) => Start();
     }
 
@@ -100,12 +102,13 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
     private void Start()
     {
         // the app is in English: so is Settings, whatever Windows' language
-        if (Nav.SettingsItem is NavigationViewItem settings)
+        if (Nav.SettingsItem is NavigationViewItem settingsItem)
         {
-            settings.Content = "Settings";
+            settingsItem.Content = "Settings";
         }
         VersionText.Text = $"{AppInfo.Name} {AppInfo.Version}";
         DataFolderText.Text = AppInfo.DataDir;
+        LoadSettings();
         BuildAiSnippets();
         if (App.StartSite is { } site)
         {
@@ -193,6 +196,10 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         {
             ShowPage(SettingsPage);
         }
+        else if (args.SelectedItem is NavigationViewItem { Tag: HistoryTag })
+        {
+            ShowHistory();
+        }
         else if (args.SelectedItem is NavigationViewItem { Tag: string tag } && tag.StartsWith(SavedTag, StringComparison.Ordinal))
         {
             _ = OpenSavedAsync(tag[SavedTag.Length..]);
@@ -223,7 +230,7 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
 
     private void ShowPage(FrameworkElement page)
     {
-        foreach (var p in new FrameworkElement[] { WelcomePage, TenantPage, SettingsPage })
+        foreach (var p in new FrameworkElement[] { WelcomePage, TenantPage, HistoryPage, SettingsPage })
         {
             p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
         }
@@ -529,6 +536,32 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
     });
 
     // ---- settings ----
+
+    private readonly SettingsStore settingsStore = new();
+    private AppSettings settings = new();
+
+    private void LoadSettings()
+    {
+        settings = settingsStore.Load();
+        ConfirmChangesSwitch.IsOn = settings.ConfirmChanges;
+    }
+
+    private void OnConfirmChangesToggled(object sender, RoutedEventArgs e)
+    {
+        if (ConfirmChangesSwitch.IsOn == settings.ConfirmChanges)
+        {
+            return;
+        }
+        settings = settings with { ConfirmChanges = ConfirmChangesSwitch.IsOn };
+        try
+        {
+            settingsStore.Save(settings);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            ShowError(ex);
+        }
+    }
 
     /// <summary>How AI apps start the MCP server: the execution alias when installed, else the exe next to this one.</summary>
     private static string McpCommand

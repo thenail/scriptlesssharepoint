@@ -289,6 +289,91 @@ public static partial class CommandCatalog
             Run = (c, n) => FileAsync(c, n, f => f.Versions.DeleteAll(), "Deleted the previous versions."),
         };
 
+        yield return new Command
+        {
+            Id = "file.versions",
+            Title = "List versions",
+            Group = "Versions",
+            Description = "Each file's earlier versions: number, when, by whom, size and comment.",
+            PowerShell = "Get-PnPFileVersion",
+            Targets = Files,
+            ReadOnly = true,
+            Glyph = "\uE81C",
+            Run = async (c, n) =>
+            {
+                using var ctx = await c.WebAsync(n).ConfigureAwait(false);
+                var file = Csom.File(ctx, n);
+                ctx.Load(file, f => f.UIVersionLabel);
+                ctx.Load(file.Versions, vs => vs.Include(v => v.VersionLabel, v => v.Created, v => v.CreatedBy.Title, v => v.Size, v => v.CheckInComment));
+                await ctx.RunAsync().ConfigureAwait(false);
+                var lines = file.Versions.Reverse().Select(v =>
+                    $"{v.VersionLabel}  ·  {v.Created.ToLocalTime():g}  ·  {v.CreatedBy.Title}  ·  {Csom.Size(v.Size)}{(string.IsNullOrWhiteSpace(v.CheckInComment) ? "" : $"  ·  {v.CheckInComment}")}");
+                return CommandResult.Done($"Version {file.UIVersionLabel}, {Plural(file.Versions.Count, "earlier one", "earlier ones")}.", string.Join(Environment.NewLine, lines));
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "file.restore-version",
+            Title = "Restore an earlier version",
+            Group = "Versions",
+            Description = "Makes an earlier version of each file the current one, as a new version: nothing is lost.",
+            PowerShell = "Restore-PnPFileVersion",
+            Targets = Files,
+            Glyph = "\uE777",
+            Parameters = [new("label", "Version", ParameterKind.Text) { Required = false, Placeholder = "3.0", Hint = "Its number, as in the version history. Empty: the one before the current." }],
+            Run = async (c, n) =>
+            {
+                using var ctx = await c.WebAsync(n).ConfigureAwait(false);
+                var file = Csom.File(ctx, n);
+                ctx.Load(file.Versions, vs => vs.Include(v => v.VersionLabel, v => v.ID));
+                await ctx.RunAsync().ConfigureAwait(false);
+                var wanted = c.Args["label"]?.Trim();
+                var version = wanted is null
+                    ? file.Versions.MaxBy(v => v.ID)
+                    : file.Versions.FirstOrDefault(v => v.VersionLabel == wanted);
+                if (version is null)
+                {
+                    return CommandResult.Skipped(wanted is null ? "It has no earlier versions." : $"It has no version {wanted}.");
+                }
+                file.Versions.RestoreByLabel(version.VersionLabel);
+                await ctx.RunAsync().ConfigureAwait(false);
+                return CommandResult.Done($"Restored version {version.VersionLabel}.");
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "file.delete-old-versions",
+            Title = "Delete older versions",
+            Group = "Versions",
+            Description = "Moves each file's earlier versions, beyond the newest ones to keep, to the recycle bin: frees their space. The current version stays.",
+            PowerShell = "Remove-PnPFileVersion -Identity",
+            Targets = Files,
+            Destructive = true,
+            Glyph = "\uE74D",
+            Parameters = [new("keep", "Earlier versions to keep", ParameterKind.Number) { Default = "10", Min = 1, Max = 50000 }],
+            Run = async (c, n) =>
+            {
+                var keep = (int)c.Args.Number("keep");
+                using var ctx = await c.WebAsync(n).ConfigureAwait(false);
+                var file = Csom.File(ctx, n);
+                ctx.Load(file.Versions, vs => vs.Include(v => v.ID));
+                await ctx.RunAsync().ConfigureAwait(false);
+                var old = file.Versions.OrderByDescending(v => v.ID).Skip(keep).ToList();
+                if (old.Count == 0)
+                {
+                    return CommandResult.Skipped($"It has {Plural(file.Versions.Count, "earlier version", "earlier versions")}.");
+                }
+                foreach (var v in old)
+                {
+                    file.Versions.RecycleByID(v.ID);
+                }
+                await ctx.RunAsync().ConfigureAwait(false);
+                return CommandResult.Done($"Moved {Plural(old.Count, "version", "versions")} to the recycle bin.");
+            },
+        };
+
         // ---- delete ----
 
         yield return new Command
