@@ -1,3 +1,5 @@
+using ScriptlessSharePoint.History;
+using ScriptlessSharePoint.Plans;
 using ScriptlessSharePoint.SharePoint;
 
 namespace ScriptlessSharePoint.Mcp;
@@ -28,6 +30,12 @@ public interface IToolBackend
 
     Task<AppCatalogChange> DisableSiteAppCatalogAsync(string? connection, string url, CancellationToken ct);
 
-    /// <summary>Starts the Scriptless SharePoint app, showing a site when one is given.</summary>
-    Task OpenAppAsync(string? siteUrl);
+    /// <summary>Starts the Scriptless SharePoint app, showing a site or a plan when one is given.</summary>
+    Task OpenAppAsync(string? siteUrl, string? plan = null);
+
+    /// <summary>The plans, shared with the app.</summary>
+    PlanStore Plans { get; }
+
+    /// <summary>The app's run history, for plans' results.</summary>
+    RunHistoryStore History { get; }
 }

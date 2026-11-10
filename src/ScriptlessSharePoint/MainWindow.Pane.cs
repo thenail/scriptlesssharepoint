@@ -15,8 +15,8 @@ namespace ScriptlessSharePoint.App;
 /// <summary>
 /// The pane beside the table, as File Size's Selected pane: what's ticked, and
 /// the commands for one kind of it (or for the tenant). A command opens its
-/// inputs here; Run runs it on every ticked thing of that kind, and the
-/// results stay until Done.
+/// inputs here; Run starts it as a job on every ticked thing of that kind,
+/// and the results follow the job (Close leaves it running in the background).
 /// </summary>
 public sealed partial class MainWindow
 {
@@ -25,8 +25,10 @@ public sealed partial class MainWindow
     private bool fillingKinds;
     private Command? command;
     private readonly List<(CommandParameter Parameter, FrameworkElement Control, Func<string?> Value)> fields = [];
-    private CancellationTokenSource? running;
-    private List<TargetResult> results = [];
+
+    /// <summary>The job the pane's results follow.</summary>
+    private Job? watchedJob;
+    private JobBinding? paneBinding;
 
     private IEnumerable<NodeKind> SelectedKinds => selection.Values.Select(n => n.Kind).Distinct().Order();
 
@@ -89,6 +91,11 @@ public sealed partial class MainWindow
         if (OverviewView.Visibility == Visibility.Visible)
         {
             BuildCommandList();
+        }
+        // a plan on show: what it runs on is what's ticked
+        if (PlanView.Visibility == Visibility.Visible)
+        {
+            RefreshPlanCheck();
         }
     }
 
@@ -153,6 +160,7 @@ public sealed partial class MainWindow
                 Style = (Style)Application.Current.Resources["CaptionSecondary"],
                 Margin = new Thickness(12, 8, 12, 0),
             });
+            AddPlansToCommandList(filter);
             return;
         }
         var critical = (Brush)Application.Current.Resources["SystemFillColorCriticalBrush"];
@@ -190,6 +198,7 @@ public sealed partial class MainWindow
                 CommandList.Children.Add(button);
             }
         }
+        AddPlansToCommandList(filter);
     }
 
     // ---- a command's inputs ----
@@ -225,6 +234,7 @@ public sealed partial class MainWindow
 
         OverviewView.Visibility = Visibility.Collapsed;
         ResultsView.Visibility = Visibility.Collapsed;
+        PlanView.Visibility = Visibility.Collapsed;
         FormView.Visibility = Visibility.Visible;
         if (FormFields.Children.FirstOrDefault() is Control first)
         {
@@ -365,12 +375,9 @@ public sealed partial class MainWindow
 
     private void ShowOverview()
     {
-        if (running is not null)
-        {
-            return; // a run's results stay until it's over
-        }
         FormView.Visibility = Visibility.Collapsed;
         ResultsView.Visibility = Visibility.Collapsed;
+        PlanView.Visibility = Visibility.Collapsed;
         OverviewView.Visibility = Visibility.Visible;
         BuildCommandList();
     }
@@ -379,7 +386,7 @@ public sealed partial class MainWindow
 
     private async void OnRun(object sender, RoutedEventArgs e)
     {
-        if (command is not { } c || running is not null)
+        if (command is not { } c)
         {
             return;
         }
@@ -410,7 +417,10 @@ public sealed partial class MainWindow
                 return;
             }
         }
-        await RunAsync(c, targets, args, kind, ask);
+        if (StartJob(c, targets, args, ask) is { } job)
+        {
+            WatchJob(job);
+        }
     }
 
     /// <summary>The inputs given, one a line ("Show in search: off"), for confirming.</summary>
@@ -423,204 +433,75 @@ public sealed partial class MainWindow
             _ => args[p.Name]!.Trim().ReplaceLineEndings(" "),
         }}"));
 
-    /// <summary>The rows of the run on now (or last), by target.</summary>
-    private readonly Dictionary<string, RunRow> runRows = [];
-
-    /// <summary>
-    /// Runs a command, with a row for each target from the start: waiting,
-    /// running, then how it went. With <paramref name="ask"/>, each waits for
-    /// its own Run or Skip first.
-    /// </summary>
-    private async Task RunAsync(Command c, List<SpNode> targets, CommandArgs args, NodeKind kind, bool ask = false)
+    /// <summary>The pane's results follow a job: its rows, its progress, and Pause, Cancel and Run all for it.</summary>
+    private void WatchJob(Job job)
     {
-        Session session;
-        try
-        {
-            session = workspace.Current();
-        }
-        catch (Exception e)
-        {
-            ShowError(e);
-            return;
-        }
-        var tenant = kind == NodeKind.Tenant;
-        var applicable = targets.Where(t => c.AppliesTo(t.Kind)).DistinctBy(t => t.Key).ToList();
-        results = [];
-        runRows.Clear();
-        ResultsList.Items.Clear();
-        foreach (var t in applicable)
-        {
-            var row = new RunRow(t, tenant, c.Destructive, UpdateAsking);
-            runRows[t.Key] = row;
-            ResultsList.Items.Add(row.View);
-        }
-        ResultsTitle.Text = c.Title;
-        var inputs = InputsText(c, args);
-        ResultsInputs.Text = inputs;
-        ResultsInputs.Visibility = inputs.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
-        ResultsBar.Maximum = Math.Max(1, applicable.Count);
-        ResultsBar.Value = 0;
-        ResultsBar.Visibility = Visibility.Visible;
-        CancelRunButton.Visibility = Visibility.Visible;
-        DoneButton.Visibility = Visibility.Collapsed;
-        SelectFailedButton.Visibility = Visibility.Collapsed;
+        Unwatch();
+        watchedJob = job;
+        paneBinding = new JobBinding(job, ResultsList, UpdateWatched);
         FormView.Visibility = Visibility.Collapsed;
         OverviewView.Visibility = Visibility.Collapsed;
+        PlanView.Visibility = Visibility.Collapsed;
         ResultsView.Visibility = Visibility.Visible;
+        UpdateWatched();
+    }
 
-        void Counts()
-        {
-            var waiting = runRows.Values.Count(r => r.IsAsking);
-            ResultsSummary.Text = string.Join(" · ", new[]
-            {
-                $"{results.Count:N0} of {applicable.Count:N0} done",
-                waiting > 0 ? $"{waiting:N0} to confirm" : null,
-            }.OfType<string>());
-        }
-        void UpdateAsking()
-        {
-            RunAllButton.Visibility = runRows.Values.Any(r => r.IsAsking) ? Visibility.Visible : Visibility.Collapsed;
-            if (running is not null)
-            {
-                Counts();
-            }
-        }
+    private void Unwatch()
+    {
+        paneBinding?.Dispose();
+        paneBinding = null;
+        watchedJob = null;
+    }
 
-        // in the history from the start, so a run cut short by closing the app still shows
-        var record = active is { } connection
-            ? SaveRun(new RunRecord
-            {
-                CommandId = c.Id,
-                Title = c.Title,
-                ConnectionId = connection.Id,
-                ConnectionName = connection.Name,
-                Kind = kind,
-                Started = DateTimeOffset.Now,
-                Args = args.ToDictionary().Where(a => a.Value is not null).ToDictionary(a => a.Key, a => a.Value),
-                Inputs = inputs.Split('\n', StringSplitOptions.RemoveEmptyEntries),
-                Targets = applicable.Select(t => new RunTarget
-                {
-                    Target = t,
-                    Site = tenant ? null : siteOf.GetValueOrDefault(t.Key) ?? SpNode.SiteFromUrl(t.SiteUrl ?? t.Url),
-                    Parent = parentOf.GetValueOrDefault(t.Key),
-                    Message = "Didn't finish: the app closed while it ran.",
-                }).ToList(),
-            })
-            : null;
-
-        running = new CancellationTokenSource();
-        Counts();
-        // progress arrives posted to this thread, possibly after the run has
-        // ended: then the run's own list, shown below, already has it
-        var finished = false;
-        var progress = new Progress<TargetResult>(r =>
+    private void UpdateWatched()
+    {
+        if (watchedJob is not { } job)
         {
-            if (finished)
-            {
-                return;
-            }
-            results.Add(r);
-            ResultsBar.Value = results.Count;
-            runRows.GetValueOrDefault(r.Target.Key)?.Show(r.Result);
-            Counts();
-        });
-        // the runner calls these from its own threads: the rows change on this one
-        void Started(SpNode n) => ui.TryEnqueue(() =>
-        {
-            if (!finished)
-            {
-                runRows.GetValueOrDefault(n.Key)?.Running();
-            }
-        });
-        Task<bool> Approve(SpNode n, CancellationToken ct)
-        {
-            var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            ct.Register(() => answer.TrySetCanceled(ct));
-            ui.TryEnqueue(() =>
-            {
-                if (runRows.GetValueOrDefault(n.Key) is { } row)
-                {
-                    row.Ask(answer);
-                }
-                else
-                {
-                    answer.TrySetResult(false);
-                }
-            });
-            return answer.Task;
+            return;
         }
-
-        IReadOnlyList<TargetResult> all;
-        var cancelled = false;
-        try
-        {
-            all = await CommandRunner.RunAsync(c, applicable, args, session.Client, this, progress, running.Token, Started, ask ? Approve : null);
-        }
-        catch (Exception e)
-        {
-            all = results;
-            ShowError(e);
-        }
-        finally
-        {
-            cancelled = running.IsCancellationRequested;
-            running.Dispose();
-            running = null;
-        }
-
-        // the run's list is the whole story (with the ones cancelled before they started)
-        finished = true;
-        results = [.. all];
-        foreach (var r in results)
-        {
-            runRows.GetValueOrDefault(r.Target.Key)?.Show(r.Result);
-        }
-        var done = results.Count(r => r.Result is { Ok: true, WasSkipped: false });
-        var declined = results.Count(r => r.Result.WasDeclined);
-        var skipped = results.Count(r => r.Result is { WasSkipped: true, WasDeclined: false });
-        var failed = results.Count(r => !r.Result.Ok);
-        var found = results.SelectMany(r => r.Result.Found).Select(f => f.Node).DistinctBy(n => n.Key).ToList();
-        ResultsSummary.Text = string.Join(" · ", (c.After == After.Tick
-            ? new[]
-            {
-                found.Count > 0 ? $"Ticked {Summary(found)}" : "Nothing found",
-                skipped > 0 ? $"none in {Plural(skipped, "site", "sites")}" : null,
-                failed > 0 ? $"{failed:N0} failed" : null,
-            }
-            : new[]
-            {
-                done > 0 ? $"{done:N0} done" : null,
-                skipped > 0 ? $"{skipped:N0} unchanged" : null,
-                declined > 0 ? $"{declined:N0} not run" : null,
-                failed > 0 ? $"{failed:N0} failed" : null,
-            }).OfType<string>());
-        ResultsBar.Visibility = Visibility.Collapsed;
-        CancelRunButton.Visibility = Visibility.Collapsed;
-        RunAllButton.Visibility = Visibility.Collapsed;
+        ResultsTitle.Text = job.Plan is null ? job.Command.Title : $"{job.Plan.Name} · {job.StepTitle}";
+        var inputs = InputsText(job.Command, job.Args);
+        ResultsInputs.Text = inputs;
+        ResultsInputs.Visibility = inputs.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        ResultsSummary.Text = JobSummary(job);
+        ResultsBar.Maximum = Math.Max(1, job.Targets.Count);
+        ResultsBar.Value = job.DoneCount;
+        ResultsBar.ShowPaused = job.State == JobState.Paused;
+        ResultsBar.Visibility = job.IsOver ? Visibility.Collapsed : Visibility.Visible;
+        PauseRunButton.Visibility = job.IsOver ? Visibility.Collapsed : Visibility.Visible;
+        PauseRunButton.Content = job.State == JobState.Paused ? "Carry on" : "Pause";
+        PauseRunButton.IsEnabled = !job.Pausing;
+        CancelRunButton.Visibility = job.IsOver ? Visibility.Collapsed : Visibility.Visible;
+        RunAllButton.Visibility = job.AskingCount > 0 ? Visibility.Visible : Visibility.Collapsed;
         DoneButton.Visibility = Visibility.Visible;
-        SelectFailedButton.Visibility = failed > 0 && failed < results.Count && !tenant ? Visibility.Visible : Visibility.Collapsed;
-        if (record is not null)
+        DoneButton.Content = job.IsOver ? "Done" : "Close";
+        ToolTipService.SetToolTip(DoneButton, job.IsOver ? null : "It carries on in the background: Jobs shows it");
+        var failed = job.Targets.Values.Count(t => t.Result is { Ok: false });
+        SelectFailedButton.Visibility = job.IsOver && failed > 0 && failed < job.Targets.Count && job.Kind != NodeKind.Tenant ? Visibility.Visible : Visibility.Collapsed;
+        if (shownPlan is not null && PlanView.Visibility == Visibility.Visible)
         {
-            var byKey = results.ToDictionary(r => r.Target.Key, r => r.Result);
-            SaveRun(record with
-            {
-                Finished = DateTimeOffset.Now,
-                Cancelled = cancelled,
-                Targets = record.Targets.Select(t => byKey.TryGetValue(t.Target.Key, out var r)
-                    ? t with { Outcome = RunTarget.OutcomeOf(r), Message = r.Message, Detail = r.Detail }
-                    : t with { Outcome = RunOutcome.Failed, Message = "Not run." }).ToList(),
-            });
+            RefreshPlanCheck();
         }
-        Apply(c, results);
     }
 
     /// <summary>Runs every target still waiting to be confirmed.</summary>
-    private void OnRunAll(object sender, RoutedEventArgs e)
+    private void OnRunAll(object sender, RoutedEventArgs e) => paneBinding?.RunAll();
+
+    private void OnPauseRun(object sender, RoutedEventArgs e)
     {
-        foreach (var row in runRows.Values.Where(r => r.IsAsking).ToList())
+        if (watchedJob is not { } job)
         {
-            row.Answer(true);
+            return;
         }
+        if (job.State == JobState.Paused)
+        {
+            _ = ResumeJobAsync(job);
+        }
+        else
+        {
+            PauseJob(job);
+        }
+        UpdateWatched();
     }
 
     /// <summary>"/sites/hr", or the folder a file is in: where a target is, so same-named ones can be told apart.</summary>
@@ -710,7 +591,7 @@ public sealed partial class MainWindow
         public bool IsAsking => answer is not null;
 
         /// <summary>Waits for its turn.</summary>
-        private void Waiting() => Set(Glyph("\uE823", "TextFillColorTertiaryBrush"), "Waiting…");
+        public void Waiting() => Set(Glyph("\uE823", "TextFillColorTertiaryBrush"), "Waiting…");
 
         /// <summary>Asks whether to run it; <paramref name="tcs"/> gets the answer.</summary>
         public void Ask(TaskCompletionSource<bool> tcs)
@@ -798,18 +679,39 @@ public sealed partial class MainWindow
 
     private void OnCancelRun(object sender, RoutedEventArgs e)
     {
-        running?.Cancel();
-        CancelRunButton.Visibility = Visibility.Collapsed;
-        ResultsSummary.Text = "Stopping after the ones already running…";
+        if (watchedJob is { IsOver: false } job)
+        {
+            CancelJob(job);
+            ResultsSummary.Text = "Stopping after the ones already running…";
+        }
     }
 
-    private void OnResultsDone(object sender, RoutedEventArgs e) => ShowOverview();
+    private void OnResultsDone(object sender, RoutedEventArgs e)
+    {
+        var job = watchedJob;
+        Unwatch();
+        if (job is { IsOver: false })
+        {
+            ShowToast($"“{job.Title}” carries on", "It runs in the background: Jobs shows how it's going.", ("Jobs", () => Nav.SelectedItem = HistoryItem));
+        }
+        // after a plan's run: back to the plan
+        if (shownPlan is { } plan)
+        {
+            ShowPlan(plan);
+            return;
+        }
+        ShowOverview();
+    }
+
+    /// <summary>What the watched job has done so far, as results.</summary>
+    private List<TargetResult> WatchedResults() =>
+        watchedJob?.Targets.Values.Where(t => t.Result is not null).Select(t => new TargetResult(t.Node, t.Result!)).ToList() ?? [];
 
     private void OnCopyResults(object sender, RoutedEventArgs e)
     {
         var text = new StringBuilder();
         text.AppendLine(ResultsTitle.Text);
-        foreach (var r in results)
+        foreach (var r in WatchedResults())
         {
             text.AppendLine($"{(r.Result.Ok ? r.Result.WasSkipped ? "–" : "✓" : "✗")} {r.Target.Url}: {r.Result.Message}");
             if (r.Result.Detail is { Length: > 0 } d)
@@ -823,7 +725,8 @@ public sealed partial class MainWindow
     /// <summary>Ticks only the targets that failed, to try them again.</summary>
     private void OnSelectFailed(object sender, RoutedEventArgs e)
     {
-        var failed = results.Where(r => !r.Result.Ok).Select(r => r.Target).ToList();
+        var failed = WatchedResults().Where(r => !r.Result.Ok).Select(r => r.Target).ToList();
+        Unwatch();
         foreach (var key in selection.Keys.ToList())
         {
             Untick(key);

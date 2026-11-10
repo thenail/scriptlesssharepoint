@@ -232,13 +232,13 @@ public sealed class CommandCatalogTests
         ListId = Guid.NewGuid(),
     };
 
-    private sealed class NoHost : ICommandHost
+    internal sealed class NoHost : ICommandHost
     {
         public void OpenUrl(string url) { }
         public void CopyText(string text) { }
     }
 
-    private sealed class NoTokens : Auth.ITokenProvider
+    internal sealed class NoTokens : Auth.ITokenProvider
     {
         public Task<string> GetTokenAsync(string resource, bool interactive, CancellationToken cancellationToken = default) => Task.FromResult("x");
         public Task SignOutAsync() => Task.CompletedTask;

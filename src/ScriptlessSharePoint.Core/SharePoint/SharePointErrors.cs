@@ -71,7 +71,11 @@ public static class SharePointErrors
         _ => $"SharePoint answered HTTP {status}.",
     };
 
-    /// <summary>Errors worth retrying: throttling and short outages.</summary>
+    /// <summary>
+    /// How long to wait before trying again, for throttling (429) and short
+    /// outages (503); null for anything else. SharePoint's Retry-After when it
+    /// gives one (up to 5 minutes), else 5, 10, 20, 40, then 60 seconds.
+    /// </summary>
     internal static TimeSpan? RetryAfter(Exception e, int attempt)
     {
         int? status = e switch
@@ -80,12 +84,17 @@ public static class SharePointErrors
             HttpRequestException { StatusCode: { } s } => (int)s,
             _ => null,
         };
-        if (status is not (429 or 503) || attempt >= 3)
+        if (status is not (429 or 503))
         {
             return null;
         }
-        var header = (e as WebException)?.Response?.Headers["Retry-After"];
-        var seconds = int.TryParse(header, out var s2) ? s2 : 5 * (attempt + 1);
-        return TimeSpan.FromSeconds(Math.Clamp(seconds, 1, 60));
+        TimeSpan? asked = e switch
+        {
+            ThrottledException { RetryAfter: { } after } => after,
+            WebException { Response: { } response } when int.TryParse(response.Headers["Retry-After"], out var seconds) => TimeSpan.FromSeconds(seconds),
+            _ => null,
+        };
+        var wait = asked ?? TimeSpan.FromSeconds(Math.Min(60, 5 * Math.Pow(2, Math.Min(attempt, 4))));
+        return TimeSpan.FromSeconds(Math.Clamp(wait.TotalSeconds, 1, 300));
     }
 }

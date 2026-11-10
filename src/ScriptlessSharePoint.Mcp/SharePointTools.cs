@@ -1,5 +1,5 @@
-// The server's tools: list and read connections and sites, and enable or
-// remove site collection app catalogs. Calls run one at a time; failures come
+// The server's tools: list and read connections and sites, enable or remove
+// site collection app catalogs, and make plans (SharePointTools.Plans.cs). Calls run one at a time; failures come
 // back as results with isError, never as protocol errors.
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -45,7 +45,7 @@ public sealed record ToolResult(string Text, bool IsError = false)
 /// <summary>Bad arguments: the message says which and why.</summary>
 public sealed class ToolArgumentException(string message) : Exception(message);
 
-public sealed class SharePointTools
+public sealed partial class SharePointTools
 {
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -95,9 +95,10 @@ public sealed class SharePointTools
             Schema(("url", Str(UrlDescription), true), Connection()),
             new(false, true, true, true)),
         new("open_app", "Open Scriptless SharePoint",
-            "Opens the Scriptless SharePoint app on this PC, where the user signs in and manages connections; with `url`, it shows that site.",
-            Schema(("url", Str("A site to show (optional)."), false)),
+            "Opens the Scriptless SharePoint app on this PC, where the user signs in and manages connections; with `url`, it shows that site; with `plan`, that plan, for the user to look over and run.",
+            Schema(("url", Str("A site to show (optional)."), false), ("plan", Str("A plan's id to show (optional)."), false)),
             Read with { OpenWorldHint = false }),
+        .. PlanTools(),
     ];
 
     private readonly IToolBackend backend;
@@ -209,11 +210,16 @@ public sealed class SharePointTools
             case "open_app":
             {
                 var url = a.String("url");
-                await backend.OpenAppAsync(url).ConfigureAwait(false);
-                return new ToolResult(JsonSerializer.Serialize(new { opened = true, url }, Json));
+                var plan = a.String("plan");
+                if (plan is not null && backend.Plans.Load(plan) is null)
+                {
+                    return new ToolResult($"There's no plan \"{plan}\" (list_plans lists them).", true);
+                }
+                await backend.OpenAppAsync(url, plan).ConfigureAwait(false);
+                return new ToolResult(JsonSerializer.Serialize(new { opened = true, url, plan }, Json));
             }
             default:
-                return new ToolResult($"Unknown tool {name}.", true);
+                return await RunPlanToolAsync(name, a).ConfigureAwait(false) ?? new ToolResult($"Unknown tool {name}.", true);
         }
     }
 
@@ -290,6 +296,9 @@ public sealed class SharePointTools
         }
 
         public string Required(string name) => String(name) ?? throw Invalid($"{name}: required");
+
+        /// <summary>An argument as it came (arrays and objects), or null.</summary>
+        public JsonNode? Node(string name) => args[name];
 
         public int Int(string name, int min, int max, int fallback)
         {

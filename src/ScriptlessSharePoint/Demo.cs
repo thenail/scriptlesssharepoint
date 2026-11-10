@@ -29,6 +29,22 @@ internal static class Demo
         ("/teams/engineering-platform", "Engineering - Platform", "TEAMCHANNEL#1"),
     ];
 
+    /// <summary>Made-up facts for the demo's sites, varied enough for every predefined selection to pick some.</summary>
+    public static IReadOnlyList<SiteFacts> Facts() => Sites.Select((s, i) => new SiteFacts(
+            Tenant + s.Path, s.Title, s.Template, DateTimeOffset.Now.AddDays(-i * 37), DateTimeOffset.Now.AddDays(-i * 50 - 3), null)
+        {
+            IsHubSite = i % 7 == 0,
+            HubSiteId = i % 3 == 0 ? Guid.Parse("11111111-1111-1111-1111-111111111111") : Guid.Empty,
+            GroupId = s.Template?.StartsWith("GROUP", StringComparison.Ordinal) == true ? Guid.NewGuid() : Guid.Empty,
+            IsTeamsConnected = i % 4 == 1,
+            Sharing = (i % 4) switch { 0 => "Disabled", 1 => "ExternalUserAndGuestSharing", 2 => "ExternalUserSharingOnly", _ => "ExistingExternalUserSharingOnly" },
+            LockState = i % 9 == 4 ? "ReadOnly" : "Unlock",
+            StorageUsedMb = i * 4096,
+            StorageLimitMb = 1024 * 1024 / (i % 5 == 2 ? 256 : 1),
+            SensitivityLabel = i % 2 == 0 ? Guid.Empty : Guid.NewGuid(),
+            ArchiveStatus = i % 11 == 5 ? "FullyArchived" : "NotArchived",
+        }).ToList();
+
     public static Task<SitePage> SitesAsync(string? query)
     {
         var sites = Sites

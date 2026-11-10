@@ -92,7 +92,15 @@ public sealed partial class SharePointClient
         if (!response.IsSuccessStatusCode)
         {
             var message = RestError(text);
-            if (response.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable or HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            if (response.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable)
+            {
+                // how long SharePoint asked to wait: seconds, or a time
+                var after = response.Headers.RetryAfter is { } r
+                    ? r.Delta ?? (r.Date is { } date ? date - DateTimeOffset.UtcNow : null)
+                    : null;
+                throw new ThrottledException(message, response.StatusCode, after);
+            }
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             {
                 throw new HttpRequestException(message, null, response.StatusCode);
             }

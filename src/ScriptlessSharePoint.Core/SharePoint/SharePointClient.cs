@@ -97,6 +97,81 @@ public sealed partial class SharePointClient
         return new SitePage(sites, table.RowCount > 0 && end < table.TotalRows ? end.ToString() : null, table.TotalRows, false, "search");
     }, ct);
 
+    /// <summary>
+    /// Files, pages, items or lists SharePoint search finds for a KQL query, up
+    /// to <paramref name="limit"/>, a page of 500 at a time. Search trims to what
+    /// the connection can open, and runs a few minutes behind.
+    /// </summary>
+    public async Task<IReadOnlyList<SearchHit>> SearchContentAsync(string kql, string? sortBy = null, bool descending = false, int limit = ContentPresets.Limit,
+        IProgress<int>? progress = null, CancellationToken ct = default)
+    {
+        var hits = new List<SearchHit>();
+        using var ctx = await ContextAsync(TenantUrl, ct).ConfigureAwait(false);
+        while (hits.Count < limit)
+        {
+            ct.ThrowIfCancellationRequested();
+            var query = new KeywordQuery(ctx)
+            {
+                QueryText = kql,
+                RowLimit = Math.Min(500, limit - hits.Count),
+                StartRow = hits.Count,
+                TrimDuplicates = false,
+                EnableQueryRules = false,
+                ClientType = "ScriptlessSharePoint",
+            };
+            foreach (var p in new[] { "Title", "Path", "Filename", "Size", "LastModifiedTime", "SPSiteURL", "SPWebUrl", "SiteTitle", "ListID", "ListItemID", "IsDocument", "contentclass" })
+            {
+                query.SelectProperties.Add(p);
+            }
+            if (sortBy is not null)
+            {
+                query.SortList.Add(sortBy, descending ? SortDirection.Descending : SortDirection.Ascending);
+            }
+            var results = new SearchExecutor(ctx).ExecuteQuery(query);
+            await RetryAsync(async () =>
+            {
+                await ctx.ExecuteQueryAsync().ConfigureAwait(false);
+                return true;
+            }, ct).ConfigureAwait(false);
+            var table = results.Value.FirstOrDefault(t => t.TableType == KnownTableTypes.RelevantResults);
+            if (table is null || table.RowCount == 0)
+            {
+                break;
+            }
+            hits.AddRange(table.ResultRows.Select(Hit).OfType<SearchHit>());
+            progress?.Report(hits.Count);
+            if (hits.Count >= table.TotalRows || table.RowCount < query.RowLimit)
+            {
+                break;
+            }
+        }
+        return hits;
+
+        static SearchHit? Hit(IDictionary<string, object> row)
+        {
+            var r = new Dictionary<string, object>(row, StringComparer.OrdinalIgnoreCase);
+            string? Text(string key) => r.TryGetValue(key, out var v) && v is not null ? NullIfEmpty(v.ToString()) : null;
+            var path = Text("Path");
+            var site = Text("SPSiteURL");
+            var web = Text("SPWebUrl") ?? site;
+            if (path is null || site is null || web is null)
+            {
+                return null;
+            }
+            return new SearchHit(path, Text("Title") ?? Text("Filename") ?? path, site, web)
+            {
+                SiteTitle = Text("SiteTitle"),
+                FileName = Text("Filename"),
+                Size = long.TryParse(Text("Size"), out var size) ? size : null,
+                Modified = DateTimeOffset.TryParse(Text("LastModifiedTime"), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var m) ? m : null,
+                ListId = Guid.TryParse(Text("ListID"), out var list) ? list : null,
+                ItemId = int.TryParse(Text("ListItemID"), out var item) ? item : null,
+                IsDocument = string.Equals(Text("IsDocument"), "true", StringComparison.OrdinalIgnoreCase) || Text("IsDocument") == "1",
+                ContentClass = Text("contentclass"),
+            };
+        }
+    }
+
     /// <summary>The admin centre's own list of every site (its Active sites page reads it).</summary>
     private const string AdminSitesList = "DO_NOT_DELETE_SPLIST_TENANTADMIN_AGGREGATED_SITECOLLECTIONS";
 
@@ -297,6 +372,101 @@ public sealed partial class SharePointClient
         return all;
     }, ct);
 
+    private (DateTimeOffset At, IReadOnlyList<SiteFacts> Sites)? siteFacts;
+    private (DateTimeOffset At, IReadOnlyList<SiteFacts> Sites)? oneDriveFacts;
+
+    /// <summary>
+    /// What the admin centre knows about every site collection (OneDrives and
+    /// redirects left out), for the predefined selections: read a few hundred
+    /// at a time, and kept for a few minutes unless <paramref name="refresh"/>.
+    /// <paramref name="progress"/> hears how many have come. With
+    /// <paramref name="oneDrives"/>, the OneDrives instead. Needs a SharePoint administrator.
+    /// </summary>
+    public async Task<IReadOnlyList<SiteFacts>> SiteFactsAsync(bool refresh = false, IProgress<int>? progress = null, CancellationToken ct = default, bool oneDrives = false)
+    {
+        if (!refresh && (oneDrives ? oneDriveFacts : siteFacts) is { } cached && DateTimeOffset.UtcNow - cached.At < AdminListLifetime)
+        {
+            return cached.Sites;
+        }
+        var sites = await RetryAsync<IReadOnlyList<SiteFacts>>(async () =>
+        {
+            using var ctx = await ContextAsync(AdminUrl, ct).ConfigureAwait(false);
+            var tenant = new Tenant(ctx);
+            var all = new List<SiteFacts>();
+            string? next = null;
+            do
+            {
+                ct.ThrowIfCancellationRequested();
+                var page = tenant.GetSitePropertiesFromSharePointByFilters(new SPOSitePropertiesEnumerableFilter
+                {
+                    IncludePersonalSite = oneDrives ? PersonalSiteFilter.Include : PersonalSiteFilter.Exclude,
+                    Template = oneDrives ? "SPSPERS" : null,
+                    IncludeDetail = false,
+                    StartIndex = next,
+                });
+                ctx.Load(page);
+                await ctx.ExecuteQueryAsync().ConfigureAwait(false);
+                all.AddRange(page.ToList()
+                    .Where(p => oneDrives
+                        ? p.Template?.StartsWith("SPSPERS", StringComparison.OrdinalIgnoreCase) == true
+                        : p.Template?.StartsWith("RedirectSite", StringComparison.OrdinalIgnoreCase) != true)
+                    .Select(FactsOf));
+                progress?.Report(all.Count);
+                next = page.NextStartIndexFromSharePoint;
+            }
+            while (!string.IsNullOrEmpty(next) && all.Count < MaxAdminSites);
+            all.Sort((a, b) => string.Compare(a.Title, b.Title, StringComparison.CurrentCultureIgnoreCase));
+            return all;
+        }, ct).ConfigureAwait(false);
+        if (oneDrives)
+        {
+            oneDriveFacts = (DateTimeOffset.UtcNow, sites);
+        }
+        else
+        {
+            siteFacts = (DateTimeOffset.UtcNow, sites);
+        }
+        return sites;
+    }
+
+    /// <summary>A site's facts; what SharePoint didn't send is left at its default.</summary>
+    private static SiteFacts FactsOf(SiteProperties p)
+    {
+        static T Get<T>(Func<T> read, T fallback)
+        {
+            try
+            {
+                return read();
+            }
+            catch (PropertyOrFieldNotInitializedException)
+            {
+                return fallback;
+            }
+        }
+        static DateTimeOffset? When(DateTime d) => d == default || d.Year < 1990 ? null : new DateTimeOffset(DateTime.SpecifyKind(d, DateTimeKind.Utc));
+
+        var url = p.Url.TrimEnd('/');
+        return new SiteFacts(
+            url,
+            Get(() => p.Title, null) is { Length: > 0 } title ? title : url,
+            Get(() => p.Template, null),
+            When(Get(() => p.LastContentModifiedDate, default(DateTime))),
+            When(Get(() => p.CreatedTime, default(DateTime))),
+            Get(() => p.SiteId, Guid.Empty) is var id && id != Guid.Empty ? id : null)
+        {
+            HubSiteId = Get(() => p.HubSiteId, Guid.Empty),
+            IsHubSite = Get(() => p.IsHubSite, false),
+            GroupId = Get(() => p.GroupId, Guid.Empty),
+            IsTeamsConnected = Get(() => p.IsTeamsConnected, false),
+            Sharing = Get(() => p.SharingCapability.ToString(), null),
+            LockState = Get(() => p.LockState, null),
+            StorageUsedMb = Get(() => p.StorageUsage, 0L),
+            StorageLimitMb = Get(() => p.StorageMaximumLevel, 0L),
+            SensitivityLabel = Get(() => p.SensitivityLabel, Guid.Empty),
+            ArchiveStatus = Get(() => p.ArchiveStatus, null),
+        };
+    }
+
     /// <summary>
     /// A site collection (for any URL in it) and whether it has its own app catalog:
     /// from the tenant's list of site collection app catalogs when the connection
@@ -439,17 +609,34 @@ public sealed partial class SharePointClient
         return ctx;
     }
 
-    internal static async Task<T> RetryAsync<T>(Func<Task<T>> operation, CancellationToken ct)
+    /// <summary>The longest a request keeps trying while SharePoint throttles it.</summary>
+    public static readonly TimeSpan Patience = TimeSpan.FromMinutes(10);
+
+    /// <summary>The tenant's manners: SharePoint's pauses, and how many run at once (shared by every job and client on it).</summary>
+    public Throttle Throttle => Throttle.For(TenantUrl);
+
+    /// <summary>
+    /// Runs an operation, waiting out SharePoint's pause first. When it's
+    /// throttled (429) or SharePoint is briefly down (503), everything on this
+    /// connection pauses for as long as SharePoint asked, then it tries again,
+    /// for up to <see cref="Patience"/> in all.
+    /// </summary>
+    internal async Task<T> RetryAsync<T>(Func<Task<T>> operation, CancellationToken ct)
     {
+        var started = DateTimeOffset.UtcNow;
         for (var attempt = 0; ; attempt++)
         {
+            await Throttle.WhilePausedAsync(ct).ConfigureAwait(false);
             try
             {
-                return await operation().ConfigureAwait(false);
+                var result = await operation().ConfigureAwait(false);
+                Throttle.Succeeded();
+                return result;
             }
-            catch (Exception e) when (SharePointErrors.RetryAfter(e, attempt) is { } wait)
+            catch (Exception e) when (SharePointErrors.RetryAfter(e, attempt) is { } wait && DateTimeOffset.UtcNow - started + wait < Patience)
             {
-                await Task.Delay(wait, ct).ConfigureAwait(false);
+                Throttle.Throttled(wait);
+                Diagnostics.Log.Write("throttle", $"{TenantUrl}: told to wait {wait.TotalSeconds:0} s (attempt {attempt + 1}); {Throttle.Limit} at once from now");
             }
         }
     }

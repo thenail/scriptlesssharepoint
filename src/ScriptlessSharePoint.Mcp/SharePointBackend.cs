@@ -4,6 +4,8 @@ using System.Text.Json;
 
 using ScriptlessSharePoint.Auth;
 using ScriptlessSharePoint.Connections;
+using ScriptlessSharePoint.History;
+using ScriptlessSharePoint.Plans;
 using ScriptlessSharePoint.SharePoint;
 
 namespace ScriptlessSharePoint.Mcp;
@@ -47,8 +49,12 @@ public sealed class SharePointBackend(ConnectionStore store) : IToolBackend
     public Task<AppCatalogChange> DisableSiteAppCatalogAsync(string? connection, string url, CancellationToken ct) =>
         Client(connection).DisableSiteAppCatalogAsync(url, ct);
 
+    public PlanStore Plans { get; } = new();
+
+    public RunHistoryStore History { get; } = new();
+
     /// <summary>Starts the app: the one next to this exe, else its execution alias.</summary>
-    public Task OpenAppAsync(string? siteUrl)
+    public Task OpenAppAsync(string? siteUrl, string? plan = null)
     {
         var sibling = Path.Combine(AppContext.BaseDirectory, AppInfo.AppExe);
         var start = new ProcessStartInfo(File.Exists(sibling) ? sibling : AppInfo.AppAlias)
@@ -59,6 +65,11 @@ public sealed class SharePointBackend(ConnectionStore store) : IToolBackend
         {
             start.ArgumentList.Add("--site");
             start.ArgumentList.Add(siteUrl);
+        }
+        if (!string.IsNullOrWhiteSpace(plan))
+        {
+            start.ArgumentList.Add("--plan");
+            start.ArgumentList.Add(plan);
         }
         try
         {

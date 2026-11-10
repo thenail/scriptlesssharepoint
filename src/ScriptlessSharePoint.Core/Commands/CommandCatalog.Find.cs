@@ -1,5 +1,7 @@
 using System.Text.RegularExpressions;
 
+using Microsoft.SharePoint.Client;
+
 using ScriptlessSharePoint.SharePoint;
 
 namespace ScriptlessSharePoint.Commands;
@@ -237,6 +239,115 @@ public static partial class CommandCatalog
                     : null);
             },
         };
+
+        yield return new Command
+        {
+            Id = "find.list-state",
+            Title = "Tick lists and libraries by their settings",
+            Group = FindGroup,
+            Description = "Looks through each site's lists and libraries and ticks those in a state worth a look: their own permissions, no versions kept, over the 5,000-item threshold, empty, check-out or approval required.",
+            PowerShell = "Get-PnPList | Where-Object",
+            Targets = Webs,
+            ReadOnly = true,
+            After = After.Tick,
+            Glyph = "",
+            Parameters =
+            [
+                new("state", "Those that", ParameterKind.Choice) { Choices = ListStates, Default = "unique" },
+                Subsites(),
+            ],
+            Run = async (c, n) =>
+            {
+                var state = c.Args.Text("state");
+                var found = new List<FoundNode>();
+                foreach (var (web, contents) in await WebsAsync(c, n, c.Args.Toggle("subsites")))
+                {
+                    var lists = contents.Where(x => x.Kind is NodeKind.List or NodeKind.Library).ToList();
+                    if (lists.Count == 0)
+                    {
+                        continue;
+                    }
+                    var facts = await ListFactsAsync(c, web);
+                    found.AddRange(lists
+                        .Where(l => l.ListId is { } id && facts.TryGetValue(id, out var f) && ListInState(l, f, state))
+                        .Select(l => new FoundNode(l, web.Kind == NodeKind.Subsite ? web : null)));
+                }
+                return FoundResult(found);
+            },
+        };
+
+        yield return new Command
+        {
+            Id = "find.search",
+            Title = "Tick what search finds in each",
+            Group = FindGroup,
+            Description = "Searches each site (and its subsites) and ticks the files, pages or items found: the predefined searches, or your own. Search runs a few minutes behind.",
+            PowerShell = "Submit-PnPSearchQuery",
+            Targets = Webs,
+            ReadOnly = true,
+            After = After.Tick,
+            Glyph = "",
+            Parameters =
+            [
+                new("what", "Find", ParameterKind.Choice)
+                {
+                    Choices = [.. ContentPresets.All.Select(p => new Choice(p.Id, p.Title)), new("kql", "My own search (KQL)")],
+                    Default = ContentPresets.All[0].Id,
+                },
+                new("query", "Search", ParameterKind.Text)
+                {
+                    Placeholder = "FileExtension:xlsx Author:\"Alex Wilber\"",
+                    Hint = "Keyword Query Language, as in SharePoint search: words, and properties like FileExtension, Author, LastModifiedTime.",
+                    ShowIf = new ShowIf("what", "kql"),
+                },
+            ],
+            Run = async (c, n) =>
+            {
+                var now = DateTimeOffset.UtcNow;
+                var preset = ContentPresets.Find(c.Args.Text("what"));
+                var kql = preset?.QueryAt(now) ?? c.Args.Text("query");
+                var hits = await c.Client.SearchContentAsync($"({kql}) path:\"{n.WebUrl.TrimEnd('/')}\"", preset?.SortBy, preset?.Descending ?? false, FoundLimit, null, c.Cancellation);
+                var found = hits.Select(ContentPresets.Rows).OfType<FoundHit>()
+                    .DistinctBy(h => h.Node.Key)
+                    .Select(h => new FoundNode(h.Node, h.Parent ?? h.Web))
+                    .ToList();
+                return FoundResult(found, hits.Count >= FoundLimit ? $"Stopped at {FoundLimit:N0}: narrow the search." : null);
+            },
+        };
+    }
+
+    /// <summary>The states <c>find.list-state</c> looks for.</summary>
+    private static readonly IReadOnlyList<Choice> ListStates =
+    [
+        new("unique", "have their own permissions"),
+        new("noversions", "keep no versions (libraries)"),
+        new("large", "have over 5,000 items"),
+        new("empty", "have no items"),
+        new("checkout", "require check-out"),
+        new("approval", "require approval"),
+    ];
+
+    /// <summary>What <c>find.list-state</c> needs to know of a list, which the table's rows don't carry.</summary>
+    internal sealed record ListFacts(bool Unique, bool Versioning, int Items, bool CheckOut, bool Approval);
+
+    internal static bool ListInState(SpNode list, ListFacts f, string state) => state switch
+    {
+        "unique" => f.Unique,
+        "noversions" => list.Kind == NodeKind.Library && !f.Versioning,
+        "large" => f.Items > 5000,
+        "empty" => f.Items == 0,
+        "checkout" => f.CheckOut,
+        "approval" => f.Approval,
+        _ => false,
+    };
+
+    private static async Task<Dictionary<Guid, ListFacts>> ListFactsAsync(CommandContext c, SpNode web)
+    {
+        using var ctx = await c.Client.ContextAsync(web.WebUrl, c.Cancellation).ConfigureAwait(false);
+        var lists = ctx.LoadQuery(ctx.Web.Lists.Include(l => l.Id, l => l.HasUniqueRoleAssignments, l => l.EnableVersioning, l => l.ItemCount,
+            l => l.ForceCheckout, l => l.EnableModeration));
+        await ctx.ExecuteQueryAsync().ConfigureAwait(false);
+        return lists.ToDictionary(l => l.Id, l => new ListFacts(l.HasUniqueRoleAssignments, l.EnableVersioning, l.ItemCount, l.ForceCheckout, l.EnableModeration));
     }
 
     // ---- matching ----

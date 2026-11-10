@@ -17,6 +17,9 @@ public partial class App : Application
     /// <summary>A site to show at start (--site URL), e.g. from the MCP server's open_app.</summary>
     public static string? StartSite { get; private set; }
 
+    /// <summary>A plan to show at start (--plan ID), from the MCP server's open_app.</summary>
+    public static string? StartPlan { get; private set; }
+
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         var argv = Environment.GetCommandLineArgs();
@@ -25,6 +28,10 @@ public partial class App : Application
             if (argv[i] == "--site")
             {
                 StartSite = argv[i + 1];
+            }
+            else if (argv[i] == "--plan")
+            {
+                StartPlan = argv[i + 1];
             }
         }
         window = new MainWindow();

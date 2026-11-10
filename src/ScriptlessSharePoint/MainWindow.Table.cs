@@ -44,6 +44,8 @@ public sealed partial class MainWindow
         var v = ++view;
         failedMore.Clear();
         shownSaved = null;
+        shownPreset = null;
+        shownPlan = null;
         // every site collection again: the connection, not a saved selection, is the one picked
         if (active is not null)
         {
@@ -161,8 +163,18 @@ public sealed partial class MainWindow
             return;
         }
         // a saved selection opens again; anything else reloads the site collections
+        // a plan shows its selection (and steps) again
+        if (shownPlan is { } plan)
+        {
+            _ = OpenPlanAsync(plan.Id);
+        }
+        // a predefined selection reads the site collections again
+        else if (shownPreset is { } preset)
+        {
+            _ = ShowPresetAsync(preset, refresh: true);
+        }
         // (one from the history has no file: it shows again as it was)
-        if (shownSaved is { } s && (s.File.Length == 0 ? s : savedStore.Load(s.File)) is { } fresh)
+        else if (shownSaved is { } s && (s.File.Length == 0 ? s : savedStore.Load(s.File)) is { } fresh)
         {
             ShowSaved(fresh);
         }

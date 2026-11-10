@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
 using System.Text.Json.Nodes;
 
+using ScriptlessSharePoint.History;
 using ScriptlessSharePoint.Mcp;
+using ScriptlessSharePoint.Plans;
 using ScriptlessSharePoint.SharePoint;
 
 namespace ScriptlessSharePoint.Tests;
@@ -50,11 +52,15 @@ public class McpServerTests
             return Task.FromResult(new AppCatalogChange(url, true, "Removed."));
         }
 
-        public Task OpenAppAsync(string? siteUrl)
+        public Task OpenAppAsync(string? siteUrl, string? plan = null)
         {
-            Calls.Add($"open {siteUrl}");
+            Calls.Add($"open {siteUrl} {plan}".TrimEnd());
             return Task.CompletedTask;
         }
+
+        public PlanStore Plans { get; } = new(Path.Combine(Path.GetTempPath(), "ssp-plans-" + Guid.NewGuid().ToString("N")));
+
+        public RunHistoryStore History { get; } = new(Path.Combine(Path.GetTempPath(), "ssp-runs-" + Guid.NewGuid().ToString("N")));
     }
 
     /// <summary>A server with a client that records what the server sends.</summary>
@@ -224,6 +230,119 @@ public class McpServerTests
         var (_, isError) = await h.CallAsync("disable_site_app_catalog", new JsonObject { ["url"] = "https://contoso.sharepoint.com/sites/hr" });
         Assert.False(isError);
         Assert.Empty(h.Sent);
+    }
+
+    [Fact]
+    public async Task Lists_commands_for_what_is_ticked()
+    {
+        var (text, isError) = await new Harness().CallAsync("list_commands", new JsonObject { ["kind"] = "library", ["query"] = "versioning" });
+        Assert.False(isError);
+        Assert.Contains("\"id\":\"list.versioning\"", text);
+        Assert.DoesNotContain("\"id\":\"site.storage\"", text);
+        Assert.Contains("\"choices\"", (await new Harness().CallAsync("list_commands", new JsonObject { ["query"] = "lock" })).Text);
+    }
+
+    [Fact]
+    public async Task Plans_are_checked_saved_read_and_deleted()
+    {
+        var h = new Harness();
+        await h.InitializeAsync();
+
+        // a step that doesn't fit what's ticked: not saved
+        var (bad, badError) = await h.CallAsync("create_plan", JsonNode.Parse("""
+            {"name":"Versions","startsOn":"siteCollection","sites":["https://contoso.sharepoint.com/sites/hr"],"steps":[{"command":"list.versioning"}]}
+            """)!.AsObject());
+        Assert.True(badError);
+        Assert.Contains("wasn't saved", bad);
+        Assert.Empty(h.Backend.Plans.List());
+
+        // with a finder first, it fits
+        var (made, error) = await h.CallAsync("create_plan", JsonNode.Parse("""
+            {"name":"Versions","description":"Keep 100 versions in Site Pages","sites":["https://contoso.sharepoint.com/sites/hr"],
+             "steps":[{"command":"find.lists","args":{"which":"sitepages"}},{"command":"list.versioning","args":{"major":100,"minor":false}}]}
+            """)!.AsObject());
+        Assert.False(error, made);
+        var plan = Assert.Single(h.Backend.Plans.List());
+        Assert.Equal("test", plan.CreatedBy);
+        Assert.Equal("c1", plan.ConnectionId);
+        Assert.Equal("100", plan.Steps[1].Args["major"]);
+        Assert.Equal("false", plan.Steps[1].Args["minor"]);
+
+        // its results come from the app's history
+        h.Backend.History.Save(new RunRecord
+        {
+            CommandId = "list.versioning",
+            Title = "Versioning",
+            ConnectionId = "c1",
+            Started = DateTimeOffset.Now,
+            Finished = DateTimeOffset.Now,
+            Plan = plan.Id,
+            Step = 2,
+            Targets = [new RunTarget { Target = SpNode.SiteFromUrl("https://contoso.sharepoint.com/sites/hr"), Outcome = RunOutcome.Done, Message = "ok" }],
+        });
+        var (read, _) = await h.CallAsync("get_plan", new JsonObject { ["id"] = plan.Id });
+        Assert.StartsWith("<sharepoint_data kind=\"plan\">", read);
+        Assert.Contains("\"done\":1", read);
+
+        var (changed, changeError) = await h.CallAsync("update_plan", new JsonObject { ["id"] = plan.Id, ["name"] = "Site Pages versions" });
+        Assert.False(changeError, changed);
+        Assert.Equal("Site Pages versions", h.Backend.Plans.Load(plan.Id)!.Name);
+
+        await h.CallAsync("open_app", new JsonObject { ["plan"] = plan.Id });
+        Assert.Contains($"open  {plan.Id}", h.Backend.Calls);
+
+        var (_, deleteError) = await h.CallAsync("delete_plan", new JsonObject { ["id"] = plan.Id });
+        Assert.False(deleteError);
+        Assert.Empty(h.Backend.Plans.List());
+    }
+
+    [Fact]
+    public async Task Plans_take_variables_and_runs_are_prepared_with_values_per_site()
+    {
+        var h = new Harness();
+        await h.InitializeAsync();
+        var (made, error) = await h.CallAsync("create_plan", JsonNode.Parse("""
+            {"name":"Set up project sites","startsOn":"siteCollection",
+             "variables":[{"name":"owner","label":"Owner","type":"person"},{"name":"quota","type":"number"}],
+             "steps":[{"command":"site.owner","args":{"who":"{owner}"}},{"command":"site.storage","args":{"max":"{quota}"}},
+                      {"command":"web.title","args":{"title":"{title} (project)"}}]}
+            """)!.AsObject());
+        Assert.False(error, made);
+        var plan = Assert.Single(h.Backend.Plans.List());
+        Assert.Empty(plan.Items);
+
+        // a value missing for one site: not prepared
+        var (missing, missingError) = await h.CallAsync("prepare_run", JsonNode.Parse($$$"""
+            {"id":"{{{plan.Id}}}","values":{"quota":102400},
+             "rows":[{"url":"https://contoso.sharepoint.com/sites/falcon","values":{"owner":"alex@contoso.com"}},
+                     {"url":"https://contoso.sharepoint.com/sites/hawk","values":{}}]}
+            """)!.AsObject());
+        Assert.True(missingError);
+        Assert.Contains("Owner: no value for", missing);
+        Assert.Null(h.Backend.Plans.Load(plan.Id)!.Prepared);
+
+        var (ready, readyError) = await h.CallAsync("prepare_run", JsonNode.Parse($$$"""
+            {"id":"{{{plan.Id}}}","values":{"quota":102400},
+             "rows":[{"url":"https://contoso.sharepoint.com/sites/falcon","values":{"owner":"alex@contoso.com"}},
+                     {"url":"https://contoso.sharepoint.com/sites/hawk","values":{"owner":"sam@contoso.com","quota":51200}}]}
+            """)!.AsObject());
+        Assert.False(readyError, ready);
+        var prepared = h.Backend.Plans.Load(plan.Id)!.Prepared!;
+        Assert.Equal(2, prepared.Items.Count);
+        Assert.Equal("102400", prepared.Values["quota"]);
+        Assert.Equal("51200", prepared.Rows[1].Values["quota"]);
+        Assert.Equal("test", prepared.By);
+
+        var (read, _) = await h.CallAsync("get_plan", new JsonObject { ["id"] = plan.Id });
+        Assert.Contains("\"prepared\"", read);
+        Assert.Contains("\"rows\":2", read);
+
+        // an undeclared variable in a step: not saved
+        var (bad, badError) = await h.CallAsync("update_plan", JsonNode.Parse($$$"""
+            {"id":"{{{plan.Id}}}","steps":[{"command":"web.title","args":{"title":"{client}"}}]}
+            """)!.AsObject());
+        Assert.True(badError);
+        Assert.Contains("{client}", bad);
     }
 
     [Fact]

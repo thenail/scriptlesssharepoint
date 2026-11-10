@@ -12,7 +12,9 @@ public static class CommandRunner
     public const int Parallel = 4;
 
     /// <summary>
-    /// Runs <paramref name="command"/> on each target it applies to. A target's
+    /// Runs <paramref name="command"/> on each target it applies to.
+    /// <paramref name="beforeStart"/> is awaited as each target takes its turn
+    /// (a paused job waits there). A target's
     /// failure is its result, not the run's; cancelling stops targets not yet started.
     /// <paramref name="started"/> hears of each target as it starts.
     /// With <paramref name="approve"/>, each target waits for it (in any order,
@@ -27,9 +29,12 @@ public static class CommandRunner
         IProgress<TargetResult>? progress = null,
         CancellationToken ct = default,
         Action<SpNode>? started = null,
-        Func<SpNode, CancellationToken, Task<bool>>? approve = null)
+        Func<SpNode, CancellationToken, Task<bool>>? approve = null,
+        Func<SpNode, CommandArgs>? argsFor = null,
+        Func<CancellationToken, Task>? beforeStart = null)
     {
-        if (command.Check(args, targets.Where(t => command.AppliesTo(t.Kind)).Select(t => t.Kind)) is { Count: > 0 } problems)
+        // inputs of their own per target are checked target by target, as each runs
+        if (argsFor is null && command.Check(args, targets.Where(t => command.AppliesTo(t.Kind)).Select(t => t.Kind)) is { Count: > 0 } problems)
         {
             throw new ArgumentException(string.Join(" ", problems));
         }
@@ -64,9 +69,25 @@ public static class CommandRunner
                 CommandResult result;
                 try
                 {
+                    // a paused job holds its targets here, the running ones finishing
+                    if (beforeStart is not null)
+                    {
+                        await beforeStart(ct).ConfigureAwait(false);
+                    }
                     ct.ThrowIfCancellationRequested();
+                    var own = context;
+                    if (argsFor?.Invoke(target) is { } targetArgs)
+                    {
+                        if (command.Check(targetArgs, [target.Kind]) is { Count: > 0 } wrong)
+                        {
+                            throw new ArgumentException(string.Join(" ", wrong));
+                        }
+                        own = new CommandContext(client, targetArgs, host, ct);
+                    }
+                    // a place among all the connection's jobs (fewer while SharePoint throttles)
+                    using var place = await client.Throttle.EnterAsync(ct).ConfigureAwait(false);
                     started?.Invoke(target);
-                    result = await SharePointClient.RetryAsync(() => command.Run(context, target), ct).ConfigureAwait(false);
+                    result = await client.RetryAsync(() => command.Run(own, target), ct).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {

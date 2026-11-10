@@ -19,6 +19,17 @@ public enum RunOutcome
     Failed,
 }
 
+/// <summary>Where a job is.</summary>
+public enum JobState
+{
+    Running,
+
+    /// <summary>Paused by the user, or by the app closing: it carries on when resumed.</summary>
+    Paused,
+    Done,
+    Cancelled,
+}
+
 /// <summary>One target of a run: what it was, where it showed in the table, and how it went.</summary>
 public sealed record RunTarget
 {
@@ -33,6 +44,18 @@ public sealed record RunTarget
     public RunOutcome Outcome { get; init; }
     public string Message { get; init; } = "";
     public string? Detail { get; init; }
+
+    /// <summary>What a finder found in it.</summary>
+    public IReadOnlyList<FoundNode>? Found { get; init; }
+
+    /// <summary>Its result again (for a job carrying on after a restart).</summary>
+    public CommandResult Result() => (Outcome switch
+    {
+        RunOutcome.Done => CommandResult.Done(Message, Detail),
+        RunOutcome.Unchanged => CommandResult.Skipped(Message),
+        RunOutcome.NotRun => CommandResult.Declined() with { Message = Message },
+        _ => CommandResult.Failed(Message) with { Detail = Detail },
+    }) with { Found = Found ?? [] };
 
     public static RunOutcome OutcomeOf(CommandResult r) =>
         !r.Ok ? RunOutcome.Failed : r.WasDeclined ? RunOutcome.NotRun : r.WasSkipped ? RunOutcome.Unchanged : RunOutcome.Done;
@@ -61,6 +84,36 @@ public sealed record RunRecord
     public DateTimeOffset? Finished { get; init; }
 
     public bool Cancelled { get; init; }
+
+    /// <summary>The plan it was a step of (its ID), when it was.</summary>
+    public string? Plan { get; init; }
+
+    public string? PlanName { get; init; }
+
+    /// <summary>Which step of the plan, from 1.</summary>
+    public int? Step { get; init; }
+
+    // ---- as a job: what it takes to see it through, and to carry on after a restart ----
+
+    /// <summary>The job it's part of: one record for a command, one per step for a plan.</summary>
+    public string? JobId { get; init; }
+
+    /// <summary>Running, paused (by the user, or because the app closed), done or cancelled; null in records from before jobs.</summary>
+    public JobState? State { get; init; }
+
+    /// <summary>Whether each item asks Run or Skip first.</summary>
+    public bool Ask { get; init; }
+
+    /// <summary>The plan as it was when the job started, so it can carry on.</summary>
+    public Plans.Plan? PlanSnapshot { get; init; }
+
+    /// <summary>A plan job's values: for everything, and per item.</summary>
+    public IReadOnlyDictionary<string, string>? Values { get; init; }
+
+    public IReadOnlyList<Plans.PlanRow>? Rows { get; init; }
+
+    /// <summary>What was ticked when the step started (a plan's later steps run on it, or on what a finder found).</summary>
+    public IReadOnlyList<SpNode>? Ticked { get; init; }
 
     /// <summary>The inputs given, as the command reads them.</summary>
     public IReadOnlyDictionary<string, string?> Args { get; init; } = new Dictionary<string, string?>();

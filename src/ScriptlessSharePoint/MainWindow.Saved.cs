@@ -96,8 +96,11 @@ public sealed partial class MainWindow
         }
     }
 
-    private NavigationViewItem? NavItem(string tag) =>
-        Nav.MenuItems.OfType<NavigationViewItem>().FirstOrDefault(i => i.Tag as string == tag);
+    /// <summary>A navigation item by its tag, the predefined selections inside their section included.</summary>
+    private NavigationViewItem? NavItem(string tag) => NavItems(Nav.MenuItems).FirstOrDefault(i => i.Tag as string == tag);
+
+    private static IEnumerable<NavigationViewItem> NavItems(IList<object> items) =>
+        items.OfType<NavigationViewItem>().SelectMany(i => NavItems(i.MenuItems).Prepend(i));
 
     /// <summary>"3 libraries · 12 files".</summary>
     private static string Summary(IEnumerable<SpNode> nodes) =>
@@ -220,10 +223,11 @@ public sealed partial class MainWindow
             return;
         }
         RefreshSavedSelections();
-        // saved from another saved selection: the new one is the one on show now, and Save goes to it
+        // saved from another saved selection (or a predefined one): the new one is the one on show now, and Save goes to it
         if (shownSaved is not null)
         {
             shownSaved = saved;
+            shownPreset = null;
             SelectNavQuietly(SavedTag + saved.File);
             StatusTitle.Text = $"Saved selection: {saved.Name}";
         }
@@ -320,6 +324,19 @@ public sealed partial class MainWindow
     /// <summary>After signing in: the saved selection waiting for it, or every site collection.</summary>
     private Task ShowSitesOrSavedAsync()
     {
+        if (pendingPlan is { } plan && plan.ConnectionId == active?.Id)
+        {
+            pendingPlan = null;
+            pendingPreset = null;
+            pendingSaved = null;
+            return ShowPlanSelectionAsync(plan);
+        }
+        if (pendingPreset is { } preset)
+        {
+            pendingPreset = null;
+            pendingSaved = null;
+            return ShowPresetAsync(preset, refresh: false);
+        }
         if (pendingSaved is null)
         {
             pendingForm = null;
@@ -344,6 +361,7 @@ public sealed partial class MainWindow
     {
         ++view;
         shownSaved = s;
+        shownPreset = null;
         SelectNavQuietly(SavedTag + s.File);
         typing?.Stop();
         SearchBox.Text = "";

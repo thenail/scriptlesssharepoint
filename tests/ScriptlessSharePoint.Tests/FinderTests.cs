@@ -105,7 +105,7 @@ public sealed class FinderTests
     public void Finders_tick_and_only_read()
     {
         var finders = CommandCatalog.All.Where(c => c.After == After.Tick).ToList();
-        Assert.Equal(["find.subsites", "find.lists", "find.home", "find.path", "find.content"], finders.Select(c => c.Id));
+        Assert.Equal(["find.subsites", "find.lists", "find.home", "find.path", "find.content", "find.list-state", "find.search"], finders.Select(c => c.Id));
         Assert.All(finders, c =>
         {
             Assert.True(c.ReadOnly, c.Id);

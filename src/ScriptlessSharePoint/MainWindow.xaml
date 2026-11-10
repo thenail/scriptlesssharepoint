@@ -66,7 +66,7 @@
             </NavigationView.PaneHeader>
 
             <NavigationView.FooterMenuItems>
-                <NavigationViewItem x:Name="HistoryItem" Content="History" Tag="history">
+                <NavigationViewItem x:Name="HistoryItem" Content="Jobs" Tag="history">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE81C;" />
                     </NavigationViewItem.Icon>
@@ -350,8 +350,58 @@
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock x:Name="FormTargets" Style="{StaticResource CaptionSecondary}" VerticalAlignment="Center" />
-                                            <Button x:Name="RunButton" Grid.Column="1" Style="{StaticResource AccentButtonStyle}" MinWidth="96" Click="OnRun" />
+                                            <TextBlock x:Name="FormTargets" Style="{StaticResource CaptionSecondary}" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                                <DropDownButton x:Name="AddToPlanButton" Content="Add to plan" ToolTipService.ToolTip="Keep this command, with these inputs, as a step of a plan">
+                                                    <DropDownButton.Flyout>
+                                                        <MenuFlyout x:Name="AddToPlanMenu" Placement="TopEdgeAlignedRight" Opening="OnAddToPlanOpening" />
+                                                    </DropDownButton.Flyout>
+                                                </DropDownButton>
+                                                <Button x:Name="RunButton" Style="{StaticResource AccentButtonStyle}" MinWidth="96" Click="OnRun" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </Grid>
+
+                                <!-- a plan: what it runs on and its steps -->
+                                <Grid x:Name="PlanView" Visibility="Collapsed" RowSpacing="8" Padding="0,8,0,0">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <Grid Padding="8,0,16,0" ColumnSpacing="4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button Style="{StaticResource ToolButton}" Click="OnClosePlan" ToolTipService.ToolTip="Back to the commands" AutomationProperties.Name="Back to the commands">
+                                            <FontIcon Glyph="&#xE72B;" FontSize="14" />
+                                        </Button>
+                                        <TextBlock x:Name="PlanTitle" Grid.Column="1" Style="{StaticResource BodyStrongTextBlockStyle}" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                    </Grid>
+                                    <ScrollViewer Grid.Row="1" Padding="16,0,16,0">
+                                        <StackPanel Spacing="10" Padding="0,0,0,12">
+                                            <TextBlock x:Name="PlanDescription" TextWrapping="Wrap" />
+                                            <TextBlock x:Name="PlanMeta" Style="{StaticResource CaptionSecondary}" TextWrapping="Wrap" />
+                                            <InfoBar x:Name="PlanProblems" IsOpen="False" IsClosable="False" Severity="Warning" Title="This plan can't run as it is" />
+                                            <TextBlock Text="Runs on" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,6,0,0" />
+                                            <TextBlock x:Name="PlanRunsOn" TextWrapping="Wrap" />
+                                            <StackPanel x:Name="PlanSelectionActions" Spacing="4" />
+                                            <StackPanel x:Name="PlanInputs" Spacing="10" />
+                                            <InfoBar x:Name="PlanRunCheck" IsOpen="False" IsClosable="False" Severity="Warning" Title="Before it can run" />
+                                            <TextBlock Text="Steps" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,6,0,0" />
+                                            <StackPanel x:Name="PlanSteps" Spacing="6" />
+                                        </StackPanel>
+                                    </ScrollViewer>
+                                    <Border Grid.Row="2" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,1,0,0" Padding="16,12,16,14">
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Button Content="Delete" Click="OnDeletePlan" ToolTipService.ToolTip="Delete the plan (nothing in SharePoint changes)" />
+                                            <Button x:Name="RunPlanButton" Grid.Column="1" HorizontalAlignment="Right" Style="{StaticResource AccentButtonStyle}" MinWidth="96" Content="Run plan" Click="OnRunPlan" />
                                         </Grid>
                                     </Border>
                                 </Grid>
@@ -375,6 +425,7 @@
                                             <Button x:Name="CopyResultsButton" Content="Copy" Click="OnCopyResults" ToolTipService.ToolTip="Copy the results as text" AutomationProperties.Name="Copy the results as text" />
                                             <Button x:Name="SelectFailedButton" Content="Tick the failed ones" Click="OnSelectFailed" Visibility="Collapsed" />
                                             <Button x:Name="CancelRunButton" Content="Cancel" Click="OnCancelRun" />
+                                            <Button x:Name="PauseRunButton" Click="OnPauseRun" MinWidth="80" />
                                             <Button x:Name="RunAllButton" Content="Run all" Click="OnRunAll" Visibility="Collapsed"
                                                     ToolTipService.ToolTip="Run it on every one still waiting to be confirmed" />
                                             <Button x:Name="DoneButton" Content="Done" Style="{StaticResource AccentButtonStyle}" Click="OnResultsDone" Visibility="Collapsed" />
@@ -386,8 +437,8 @@
                     </Grid>
                 </Grid>
 
-                <!-- ================= History ================= -->
-                <Grid x:Name="HistoryPage" Padding="36,0,36,24" Visibility="Collapsed">
+                <!-- ================= Jobs ================= -->
+                <Grid x:Name="JobsPage" Padding="36,0,36,24" Visibility="Collapsed">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
@@ -398,11 +449,11 @@
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <StackPanel>
-                            <TextBlock Text="History" Style="{StaticResource PageTitle}" />
-                            <TextBlock Style="{StaticResource CaptionSecondary}"
-                                       Text="Every command run from the app, newest first: the last 500, kept on this PC." />
+                            <TextBlock Text="Jobs" Style="{StaticResource PageTitle}" />
+                            <TextBlock Style="{StaticResource CaptionSecondary}" TextWrapping="Wrap"
+                                       Text="Commands and plans running now, and the last 500 that ran, kept on this PC. Pause, carry on or cancel those running; ones running when the app closed come back paused." />
                         </StackPanel>
-                        <Button x:Name="ClearHistoryButton" Grid.Column="1" Content="Clear history" Click="OnClearHistory" VerticalAlignment="Center" />
+                        <Button x:Name="ClearHistoryButton" Grid.Column="1" Content="Clear finished jobs" Click="OnClearHistory" VerticalAlignment="Center" />
                     </Grid>
 
                     <Grid Grid.Row="1" ColumnSpacing="16">
@@ -414,7 +465,7 @@
                             <Grid>
                                 <ListView x:Name="HistoryList" SelectionMode="Single" Padding="4" SelectionChanged="OnHistoryPicked" />
                                 <TextBlock x:Name="HistoryEmpty" Style="{StaticResource CaptionSecondary}" TextWrapping="Wrap" Margin="20" Visibility="Collapsed"
-                                           Text="Nothing yet. Commands you run show up here, with how each target went." />
+                                           Text="Nothing yet. Commands and plans you run show up here, with how each target went." />
                             </Grid>
                         </Border>
 
@@ -429,7 +480,8 @@
                                     <TextBlock x:Name="RunTitle" Style="{StaticResource SubtitleTextBlockStyle}" TextWrapping="Wrap" />
                                     <TextBlock x:Name="RunWhen" Style="{StaticResource CaptionSecondary}" TextWrapping="Wrap" />
                                     <TextBlock x:Name="RunInputs" Style="{StaticResource CaptionSecondary}" TextWrapping="Wrap" IsTextSelectionEnabled="True" Margin="0,6,0,0" />
-                                    <TextBlock x:Name="RunSummaryText" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,6,0,0" />
+                                    <TextBlock x:Name="RunSummaryText" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,6,0,0" TextWrapping="Wrap" />
+                                    <ProgressBar x:Name="JobBar" Visibility="Collapsed" Margin="0,4,0,0" />
                                 </StackPanel>
                                 <ListView x:Name="RunTargets" Grid.Row="1" SelectionMode="None" Padding="8,0,8,0" />
                                 <Border Grid.Row="2" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,1,0,0" Padding="20,12,20,14">
@@ -439,14 +491,22 @@
                                             <ColumnDefinition Width="*" />
                                         </Grid.ColumnDefinitions>
                                         <StackPanel Orientation="Horizontal" Spacing="8">
-                                            <Button Content="Copy" Click="OnCopyRun" ToolTipService.ToolTip="Copy the run as text" />
-                                            <Button Content="Delete" Click="OnDeleteRun" ToolTipService.ToolTip="Remove this run from the history" />
+                                            <Button Content="Copy" Click="OnCopyRun" ToolTipService.ToolTip="Copy the job as text" />
+                                            <Button x:Name="DeleteRunButton" Content="Delete" Click="OnDeleteRun" ToolTipService.ToolTip="Remove this job from the list" />
                                         </StackPanel>
-                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                                        <!-- a finished job -->
+                                        <StackPanel x:Name="FinishedJobActions" Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
                                             <Button x:Name="TickRunFailedButton" Content="Tick the failed ones" Click="OnTickRunFailed" />
                                             <Button x:Name="TickRunButton" Content="Tick these" Click="OnTickRun"
                                                     ToolTipService.ToolTip="Show its targets ticked in the connection's table" />
                                             <Button x:Name="RunAgainButton" Content="Run again…" Style="{StaticResource AccentButtonStyle}" Click="OnRunAgain" />
+                                        </StackPanel>
+                                        <!-- a job running or paused -->
+                                        <StackPanel x:Name="LiveJobActions" Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" Visibility="Collapsed">
+                                            <Button x:Name="JobRunAllButton" Content="Run all" Click="OnJobRunAll" Visibility="Collapsed"
+                                                    ToolTipService.ToolTip="Run it on every one still waiting to be confirmed" />
+                                            <Button x:Name="JobCancelButton" Content="Cancel" Click="OnJobCancel" />
+                                            <Button x:Name="JobPauseButton" Style="{StaticResource AccentButtonStyle}" MinWidth="96" Click="OnJobPause" />
                                         </StackPanel>
                                     </Grid>
                                 </Border>

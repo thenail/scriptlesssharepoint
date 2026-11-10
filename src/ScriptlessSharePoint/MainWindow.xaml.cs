@@ -59,6 +59,8 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         AddAccelerator(VirtualKey.S, VirtualKeyModifiers.Control, () => _ = SaveSelectionAsync());
         AddAccelerator(VirtualKey.S, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => _ = SaveSelectionAsync(asNew: true));
         Root.Loaded += (_, _) => Start();
+        // jobs running as the app closes are kept as they are: they come back paused
+        Closed += (_, _) => SaveNow();
     }
 
     private void SetUpChrome()
@@ -116,6 +118,12 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         }
         ReloadNav(workspace.Load().Active?.Id);
         UpdatePane();
+        WatchPlans();
+        RestoreJobs();
+        if (App.StartPlan is { } plan)
+        {
+            ui.TryEnqueue(() => _ = OpenPlanAsync(plan));
+        }
     }
 
     // ---- connections down the left ----
@@ -127,6 +135,8 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         navigating = true;
         try
         {
+            // the predefined selections stay open or closed as they were
+            KeepPresetsOpen();
             Nav.MenuItems.Clear();
             foreach (var c in data.Connections)
             {
@@ -140,7 +150,12 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
                 item.ContextFlyout = ConnectionMenu(c);
                 Nav.MenuItems.Add(item);
             }
+            if (data.Connections.Count > 0)
+            {
+                AddPresets();
+            }
             RefreshSavedSelections();
+            RefreshPlans();
         }
         finally
         {
@@ -192,6 +207,10 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         {
             return;
         }
+        if (args.SelectedItem is not NavigationViewItem { Tag: string picked } || !picked.StartsWith(PlanTag, StringComparison.Ordinal))
+        {
+            shownPlan = null;
+        }
         if (args.IsSettingsSelected)
         {
             ShowPage(SettingsPage);
@@ -199,6 +218,14 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         else if (args.SelectedItem is NavigationViewItem { Tag: HistoryTag })
         {
             ShowHistory();
+        }
+        else if (args.SelectedItem is NavigationViewItem { Tag: string plan } && plan.StartsWith(PlanTag, StringComparison.Ordinal))
+        {
+            _ = OpenPlanAsync(plan[PlanTag.Length..]);
+        }
+        else if (args.SelectedItem is NavigationViewItem { Tag: string preset } && preset.StartsWith(PresetTag, StringComparison.Ordinal))
+        {
+            _ = OpenPresetAsync(preset[PresetTag.Length..]);
         }
         else if (args.SelectedItem is NavigationViewItem { Tag: string tag } && tag.StartsWith(SavedTag, StringComparison.Ordinal))
         {
@@ -217,6 +244,12 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         {
             OnAddConnection(sender, new RoutedEventArgs());
         }
+        // a plan picked again (after going back to the commands): the plan again
+        else if (args.InvokedItemContainer is NavigationViewItem { Tag: string plan } item && plan.StartsWith(PlanTag, StringComparison.Ordinal) &&
+                 ReferenceEquals(Nav.SelectedItem, item) && PlanView.Visibility != Visibility.Visible)
+        {
+            _ = OpenPlanAsync(plan[PlanTag.Length..]);
+        }
         else if (args.InvokedItemContainer is NavigationViewItem { Tag: string id } && id == active?.Id)
         {
             ShowPage(TenantPage);
@@ -230,7 +263,7 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
 
     private void ShowPage(FrameworkElement page)
     {
-        foreach (var p in new FrameworkElement[] { WelcomePage, TenantPage, HistoryPage, SettingsPage })
+        foreach (var p in new FrameworkElement[] { WelcomePage, TenantPage, JobsPage, SettingsPage })
         {
             p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
         }
