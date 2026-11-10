@@ -28,10 +28,12 @@ public static class AppInfo
     /// <summary>
     /// Where connections and the token cache live. In the MSIX package Windows
     /// redirects this to the package's own LocalCache, the same for both executables.
+    /// SSP_DATA_DIR points it elsewhere, to try the app without touching real connections.
     /// </summary>
-    public static string DataDir { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "ScriptlessSharePoint");
+    public static string DataDir { get; } =
+        Environment.GetEnvironmentVariable("SSP_DATA_DIR") is { Length: > 0 } dir
+            ? dir
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ScriptlessSharePoint");
 
     private static string? ReadClientId()
     {

@@ -1,42 +1,43 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Scriptless SharePoint: the Windows app. A WPF window hosting the web UI
-       (web/, React and Fluent UI) in WebView2, with Core behind it (AppBridge). -->
+  <!-- Scriptless SharePoint: the Windows app. WinUI 3 (Windows App SDK,
+       self-contained), laid out as Windows Settings is, with Core behind it. -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <UseWPF>true</UseWPF>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <UseWinUI>true</UseWinUI>
     <AssemblyName>ScriptlessSharePoint</AssemblyName>
     <RootNamespace>ScriptlessSharePoint.App</RootNamespace>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <!-- ThemeMode (the Fluent theme, for the window frame) is marked experimental -->
-    <NoWarn>$(NoWarn);WPF0001</NoWarn>
-    <WebDir>$(MSBuildThisFileDirectory)..\..\web\</WebDir>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- package/build.ps1 makes the MSIX from its own manifest: the project
+         itself builds an unpackaged app that carries the Windows App SDK.
+         The MSIX tooling stays on: it makes the app's .pri and puts it, and
+         the compiled XAML, in the publish folder -->
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <EnableMsixTooling>true</EnableMsixTooling>
   </PropertyGroup>
 
   <ItemGroup>
-    <Resource Include="Assets\app.ico" />
+    <Content Include="Assets\app.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\logo.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
+    <!-- The component packages, as File Size has them: the metapackage would
+         also bring the AI and ML runtimes -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.3.9" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" Version="2.3.12" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" Version="2.1.9" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\ScriptlessSharePoint.Core\ScriptlessSharePoint.Core.csproj" />
   </ItemGroup>
-
-  <!-- The web UI's build (web/dist) goes to web\ next to the exe. It's built
-       here when it hasn't been yet; package/build.ps1 always builds it afresh,
-       and `yarn dev` in web/ serves it live (see MainWindow, SSP_WEB_URL). -->
-  <Target Name="IncludeWebUi" BeforeTargets="AssignTargetPaths" Condition="'$(SkipWebUi)' != 'true'">
-    <Exec Condition="!Exists('$(WebDir)node_modules')" Command="yarn install --frozen-lockfile --non-interactive" WorkingDirectory="$(WebDir)" />
-    <Exec Condition="!Exists('$(WebDir)dist\index.html')" Command="yarn build" WorkingDirectory="$(WebDir)" />
-    <ItemGroup>
-      <_WebUi Include="$(WebDir)dist\**\*" />
-      <Content Include="@(_WebUi)" Link="web\%(_WebUi.RecursiveDir)%(_WebUi.Filename)%(_WebUi.Extension)"
-               CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    </ItemGroup>
-  </Target>
 
 </Project>

@@ -1,8 +1,25 @@
 # Scriptless SharePoint
 
-Manage SharePoint Online without PowerShell. A Windows app (Microsoft Store, MSIX) with an MCP server, so AI apps can do the same work with the same connections.
+Manage SharePoint Online without PowerShell. A Windows app (Microsoft Store, MSIX) with an MCP server, so AI apps can work with the same connections.
 
-The first feature is **site collection app catalogs**: find a site, see whether it has its own app catalog, and enable or remove one, as `Add-SPOSiteCollectionAppCatalog` and `Remove-SPOSiteCollectionAppCatalog` do.
+## What it does
+
+- **Every site collection in one table.** Each connection's site collections, from the admin centre (or from search, for accounts that aren't SharePoint administrators). More site collections load as you scroll to the end. Rows open in place: a site to its subsites, lists and libraries, those to their folders, files and items (500 at a time, with a link for the next). Search them from the title bar.
+- **Tick, then act.** Tick anything, at any level and in any site. The pane beside the table lists the commands for what's ticked (or for the tenant, when nothing is), grouped as *Create*, *Settings*, *Sharing*, *Permissions* and so on. Each command shows the PowerShell it stands in for.
+- **Saved selections.** Save what's ticked under a name (the save button in the pane, or Ctrl+S). Saved selections are listed in the left pane below the connections. Picking one ticks its items again and shows them in the table, with the sites, lists and folders down to each opened. Anything that has gone since is left unticked. Rename or remove one from its right-click menu; removing one only removes the list.
+- **One command, many targets.** A command opens its inputs in the pane. *Run* runs it on every ticked thing of that kind, a few at a time, and lists how each went. Anything that deletes or can't easily be undone asks first. *Tick the failed ones* sets up a retry.
+- **What the shell does.** About 80 operations, through CSOM, covering what the SharePoint Online Management Shell and PnP PowerShell are used for on these things:
+
+| On | For example |
+|---|---|
+| The tenant | New site collection, deleted sites (list, restore, purge), tenant sharing and default link |
+| Site collections | Storage limit, lock state, custom scripts, unmanaged devices, page comments, sharing, owner and site collection administrators, hub sites, app catalogs, features, recycle bin, delete |
+| Sites and subsites | Rename, new subsite, library or list, owners/members/visitors, search visibility and reindex, members can share, property bag, features |
+| Lists and libraries | Rename, versioning, check-out, approval, content types, folders, attachments, navigation, hide, search, reindex, add a column, delete |
+| Folders, files, items | New folder, upload, rename (with `{name}`), set a column, copy or move (also between sites), download, check in and out, publish, approve or reject, delete previous versions, delete |
+| Everything | Open in the browser, show details, show, give, remove, break and reset permissions |
+
+The catalog is in `src/ScriptlessSharePoint.Core/Commands/`, one file per kind of target.
 
 ## Signing in
 
@@ -15,7 +32,7 @@ Each connection is one SharePoint Online tenant plus a way of signing in:
 | An app with a certificate (app-only) | App ID, tenant ID or domain, and a certificate. The app can import a `.pfx` or create a certificate. SharePoint rejects client secrets for app-only access. |
 | An access token | A token for `https://<tenant>.sharepoint.com`, used as-is until it expires. |
 
-Connections are saved in `%LOCALAPPDATA%\ScriptlessSharePoint\connections.json` (inside the package's own folder when installed from the MSIX). Pasted tokens are DPAPI-encrypted, and certificates stay in the Windows certificate store. The MSAL token cache sits in the same folder, so a sign-in done in the app also works for the MCP server.
+Connections are saved in `%LOCALAPPDATA%\ScriptlessSharePoint\connections.json`, and saved selections in `Selections\` beside it, one file each (inside the package's own folder when installed from the MSIX). Pasted tokens are DPAPI-encrypted, and certificates stay in the Windows certificate store. The MSAL token cache sits in the same folder, so a sign-in done in the app also works for the MCP server.
 
 ### The Entra app registration
 
@@ -28,7 +45,7 @@ Register this once, then either set its ID as the built-in one (see below) or en
 3. **API permissions › SharePoint › Delegated › `AllSites.FullControl`.** This needs admin consent in each tenant.
 4. For **app-only** connections, which use a customer's own registration: add **SharePoint › Application › `Sites.FullControl.All`** (with admin consent), and upload the certificate's `.cer` under *Certificates & secrets*.
 
-Enabling or removing app catalogs, and listing *All sites*, also require the signed-in account to be a SharePoint administrator. Without admin rights, search still works (it shows the sites the account can see), and so does reading a site.
+Tenant commands, most site collection settings and listing every site need the signed-in account to be a SharePoint administrator; the pane marks those commands. Without admin rights the table lists the sites the account can see (through search), and site, list and file commands work wherever the account has the permissions.
 
 **Built-in app ID:** `17316cc6-b7c2-40a2-90c7-a7b76e7f2758`, set as `SspClientId` in `src/ScriptlessSharePoint.Core/ScriptlessSharePoint.Core.csproj`. Connections whose app ID is left empty use it. To build with a different one, use `package/identity.json` (`clientId`), `SSP_CLIENT_ID`, or `dotnet build -p:SspClientId=<guid>`.
 
@@ -49,7 +66,7 @@ Enabling or removing app catalogs, and listing *All sites*, also require the sig
 
 The server only signs in silently. When a connection needs interactive sign-in, the tool says so, and the user signs in in the app. Values read from SharePoint come back inside `<sharepoint_data>` blocks, and the server's instructions tell the agent to treat them as data, not instructions.
 
-In the app, **⋯ › Connect an AI app** shows the settings for Claude Desktop, Claude Code and VS Code, for example:
+In the app, **Settings › AI apps** shows the settings for Claude Desktop, Claude Code and VS Code, for example:
 
 ```sh
 claude mcp add scriptless-sharepoint -- scriptless-sharepoint-mcp
@@ -58,52 +75,45 @@ claude mcp add scriptless-sharepoint -- scriptless-sharepoint-mcp
 ## How it fits together
 
 ```
-web/ (React + Fluent UI v9)  ──postMessage, JSON-RPC──▶  AppBridge (Core)  ──▶  SharePointClient (CSOM)
-        hosted in WebView2 by src/ScriptlessSharePoint          ▲
-                                                                 │ same connections, sign-in and operations
-AI apps ──stdio, MCP──▶ scriptless-sharepoint-mcp ──────────────┘
+src/ScriptlessSharePoint (WinUI 3)  ──▶  Workspace, CommandCatalog, SharePointClient (Core, CSOM)
+                                                ▲
+                                                │ same connections, sign-in and operations
+AI apps ──stdio, MCP──▶ scriptless-sharepoint-mcp ┘
 ```
 
-The app is a small WPF window that hosts the web UI in WebView2. The UI's built files are served from the package folder on a virtual `https://app.scriptless-sharepoint.local/` origin. Only pages from that origin can talk to the bridge, and any other link opens in the browser. The bridge (`AppBridge`) answers JSON-RPC calls from the page, and the host supplies the window for Windows sign-in, file dialogs, and opening links.
+The app is WinUI 3 (Windows App SDK, self-contained), laid out as File Size and Windows Settings are: connections down the left, Mica behind it all. `Workspace` holds the connections and the session of the one in use; `SharePointClient` reads the tree (`SharePointClient.Browse.cs`); `CommandCatalog` has the operations and `CommandRunner` runs one on many targets.
 
 ## Development
 
-Requires Windows, the .NET 10 SDK, Node with Yarn 1, and the Windows SDK (for packaging).
+Requires Windows, the .NET 10 SDK, and the Windows SDK (for packaging).
 
 ```powershell
-dotnet build                      # everything; builds web/ the first time
-dotnet test                       # .NET unit tests (no SharePoint needed)
+dotnet build                      # everything
+dotnet test                       # unit tests (no SharePoint needed)
 dotnet run --project src/ScriptlessSharePoint
-./package/build.ps1               # MSIX in package/dist/ (always rebuilds web/)
+./package/build.ps1               # MSIX in package/dist/
 ./package/build.ps1 -Register     # install the package folder for this user (Developer Mode)
 ./package/build.ps1 -Sign         # sign the .msix with a local test certificate
 ./package/icons.ps1 -Ico src/ScriptlessSharePoint/Assets/app.ico   # redraw the icon
 ```
 
-Working on the UI:
+Trying the UI without a tenant, or without touching your real connections:
 
 ```powershell
-cd web
-yarn dev                          # http://localhost:5279, with made-up data in a browser
-yarn test; yarn typecheck; yarn build
-# the real app with the live UI (Debug builds have DevTools: F12)
-$env:SSP_WEB_URL = "http://localhost:5279"; dotnet run --project ../src/ScriptlessSharePoint
-# ...or the live UI with made-up data in the app
-$env:SSP_WEB_URL = "http://localhost:5279/?mock"; dotnet run --project ../src/ScriptlessSharePoint
+$env:SSP_DEMO = "1"                       # made-up sites, lists and files in the table (commands still go to SharePoint)
+$env:SSP_DATA_DIR = "$env:TEMP\ssp-test"  # connections and sign-ins in another folder
+dotnet run --project src/ScriptlessSharePoint
 ```
-
-A normal `dotnet build` builds `web/dist` only when it's missing. After changing the UI, run `yarn build` (or use `yarn dev`).
 
 | Folder | What's in it |
 |---|---|
-| `web/` | The UI: React 19, Fluent UI v9, Vite. `src/bridge.ts` is the typed client for the bridge, and `src/mock.ts` supplies the made-up data for development |
-| `src/ScriptlessSharePoint.Core` | Connections, sign-in (MSAL, WAM, certificates, tokens), SharePoint operations (CSOM), and the UI's bridge (`Bridge/`) |
-| `src/ScriptlessSharePoint` | The Windows app: the WebView2 host |
+| `src/ScriptlessSharePoint.Core` | Connections and the session (`Workspace`), sign-in (MSAL, WAM, certificates, tokens), the tree and the operations (CSOM), the command catalog (`Commands/`) |
+| `src/ScriptlessSharePoint` | The Windows app: WinUI 3. `MainWindow.Table.cs` is the table, `MainWindow.Pane.cs` the pane |
 | `src/ScriptlessSharePoint.Mcp` | The MCP server |
-| `tests/ScriptlessSharePoint.Tests` | xUnit tests: URLs, tokens and connections, the bridge, and the MCP protocol against a fake backend |
+| `tests/ScriptlessSharePoint.Tests` | xUnit tests: URLs, tokens and connections, the command catalog and runner, and the MCP protocol against a fake backend |
 | `package/` | The AppxManifest template, the Store identity, the icon generator and `build.ps1` |
 
-The app and the MCP server are published self-contained into one folder and share the .NET runtime. For that to work, the MCP project uses the same WPF runtime profile as the app; `build.ps1` fails if the two would ship different copies of a file. The app needs the WebView2 runtime, which is part of Windows 11 and installed on almost every Windows 10 PC. If it's missing, the app offers its download page.
+The app and the MCP server are published self-contained into one folder and share the .NET runtime; `build.ps1` fails if the two would ship different copies of a file. It merges the app's and WinUI's `.pri` files into the package's `resources.pri`, which a packaged app reads its XAML and WinUI's resources from.
 
 ### Before submitting to the Store
 

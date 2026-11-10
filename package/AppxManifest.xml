@@ -27,7 +27,7 @@
     <DisplayName>Scriptless SharePoint</DisplayName>
     <PublisherDisplayName>{{PUBLISHER_NAME}}</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
-    <Description>Manage SharePoint Online without PowerShell: find sites and enable site collection app catalogs, here or from AI apps through its MCP server.</Description>
+    <Description>Manage SharePoint Online without PowerShell: every site collection, list, library and file in one table, and the operations the SharePoint Online Management Shell has for them. AI apps can search sites through its MCP server.</Description>
     <!-- the agent registry (mcpServer extension) needs Trusted Launch: only
          the package's own signed executables run under its identity -->
     <trustedlaunch:TrustedLaunch>true</trustedlaunch:TrustedLaunch>

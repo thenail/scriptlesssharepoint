@@ -2,43 +2,39 @@
 
 ## Project Structure
 
-Scriptless SharePoint manages SharePoint Online without PowerShell. It's a Microsoft Store app (MSIX) with a React and Fluent UI interface hosted in WebView2, plus an MCP server for AI apps. README.md covers the sign-in modes, the app registration, the tools and the architecture.
+Scriptless SharePoint manages SharePoint Online without PowerShell. It's a Microsoft Store app (MSIX), WinUI 3 in C# laid out like C:\Dev\FileSize (Settings-style navigation, a tree table with tick boxes, a pane beside it), plus an MCP server for AI apps. README.md covers the sign-in modes, the app registration, the commands and the tools.
 
-- **`web/`** - The UI (React 19, Fluent UI v9, Vite, TypeScript; Yarn 1)
-  - `src/bridge.ts` is the typed JSON-RPC client for the host, and `src/types.ts` mirrors the C# records (camelCase; enums by name)
-  - `src/mock.ts` stands in for the host in a browser (`yarn dev`) or with `?mock`
-  - Components are in `src/components/`; `App.tsx` holds the state
 - **`src/ScriptlessSharePoint.Core/`** - Shared by the app and the MCP server
-  - `Connections/`: saved connections (`connections.json` in `AppInfo.DataDir`, secrets encrypted with DPAPI)
+  - `Connections/`: saved connections (`connections.json` in `AppInfo.DataDir`, secrets encrypted with DPAPI), `ConnectionDraft` (what the dialog edits) and `Workspace` (saving, testing, the active connection's `Session`, sign-in)
   - `Auth/`: one `ITokenProvider` per sign-in kind
-  - `SharePoint/`: `SharePointClient` (CSOM), `TenantUrls`, and the user-facing errors in `SharePointErrors`
-  - `Bridge/`: `AppBridge`, the UI's JSON-RPC backend (one method per operation), and `IHostUi`, which is what it needs from the window
-- **`src/ScriptlessSharePoint/`** - The WebView2 host. `MainWindow` maps `web\` (copied from `web/dist`) to `https://app.scriptless-sharepoint.local/`, passes messages from that origin only to `AppBridge`, and opens every other link in the browser. `SSP_WEB_URL` (loopback only) loads `yarn dev` instead
+  - `SharePoint/`: `SharePointClient` (CSOM; `.Browse.cs` reads the tree), `SpNode`/`NodeKind` (a row), `TenantUrls`, and the user-facing errors in `SharePointErrors`
+  - `Selections/`: saved selections (`SavedSelectionStore`, one JSON file each in `Selections\` in `AppInfo.DataDir`), each for one connection, with the site collections its items are in
+  - `Commands/`: `Command` (targets, parameters, `Run` per target), `CommandCatalog` (one partial file per kind of target), `CommandRunner` (runs on many targets, 4 at a time), `Csom` (shared helpers)
+- **`src/ScriptlessSharePoint/`** - The WinUI 3 app (Windows App SDK 2.x component packages, self-contained, `WindowsPackageType=None`; `build.ps1` packages it). `MainWindow.xaml.cs` has the chrome, connections and sign-in, `MainWindow.Table.cs` the rows (`Row`, opened in place), `MainWindow.Pane.cs` the commands, forms and results, `MainWindow.Saved.cs` the saved selections (opening one follows `SpNode.Leads` down from each item's site collection, opening rows and "show more" pages as it goes). `SSP_DEMO=1` fills the table with made-up data; `SSP_DATA_DIR` moves the data folder
 - **`src/ScriptlessSharePoint.Mcp/`** - `scriptless-sharepoint-mcp.exe`, the stdio MCP server, ported from PureSVG's `packages/mcp`. It has a hand-written protocol (`McpServer`), tools (`SharePointTools`) behind `IToolBackend`, and the MCPB manifest (`--manifest`). It signs in silently only
-- **`tests/ScriptlessSharePoint.Tests/`** - xUnit tests for URLs, connections, tokens, the bridge, and MCP (against a fake backend)
-- **`package/`** - The MSIX: `AppxManifest.xml` template, `identity.json`, `icons.ps1`, and `build.ps1` (yarn build, publishes both exes self-contained into one folder, then makepri and makeappx)
+- **`tests/ScriptlessSharePoint.Tests/`** - xUnit tests for URLs, connections, tokens, the workspace, the command catalog and runner, and MCP (against a fake backend)
+- **`package/`** - The MSIX: `AppxManifest.xml` template, `identity.json`, `icons.ps1`, and `build.ps1` (publishes both exes self-contained into one folder, then makepri and makeappx)
 
 ## Commands
 
 ```powershell
 dotnet build; dotnet test
-cd web; yarn dev; yarn test; yarn typecheck; yarn build
+dotnet run --project src/ScriptlessSharePoint
 ./package/build.ps1 [-Register | -Sign]
 ```
 
 ## Notes
 
 - The version lives in `Directory.Build.props` only. The package version is that version plus `.0`
-- The MCP project sets `UseWPF` only to get the app's runtime profile. The two share a package folder, and `build.ps1` fails on differing files. Because of `UseWPF`, `System.IO` isn't an implicit using there
-- Bridge requests run on the UI thread, so `DelegatedTokenProvider` (which captures the UI `SynchronizationContext`) and the file dialogs open there
-- Adding an operation:
-  - Add a method to `AppBridge` and to `api()` in `web/src/bridge.ts`, plus `mock.ts`
-  - For AI apps, add the tool to `SharePointTools.All`, the `RunAsync` switch and `IToolBackend`. The Windows registry manifest picks it up
-- Secrets never go to the page. Tokens come in through `connections.save`/`connections.test` and only `hasToken` goes back. Values from SharePoint reach agents wrapped in `<sharepoint_data>`
+- The app and the MCP server share a package folder, and `build.ps1` fails on differing files
+- `build.ps1` merges every `.pri` in the package folder (the app's, WinUI's) into `resources.pri`, one makepri index each, and indexes only `Assets\` as files. A packaged WinUI app reads its XAML from `resources.pri`; without the merge it crashes at start. `EnableMsixTooling` must stay on, or publish leaves out the app's `.pri`
+- `Workspace` sessions are made on the UI thread, so `DelegatedTokenProvider` (which captures the UI `SynchronizationContext`) shows WAM there. Call `workspace` from UI code without `ConfigureAwait(false)`
+- Adding an operation: add a `Command` to the `CommandCatalog` file for its targets (id, group from `GroupOrder`, description, the cmdlet it stands in for, parameters, `After`, `Destructive`/`NeedsAdmin`/`ReadOnly`). The pane builds its form and runs it; `CommandCatalogTests` checks the catalog. For AI apps, add the tool to `SharePointTools.All`, the `RunAsync` switch and `IToolBackend`
+- `CommandCatalog.All` is built lazily: its static choice lists live in other partial files, whose initialisation order C# doesn't fix
+- Values from SharePoint reach agents wrapped in `<sharepoint_data>`
 - "All sites" (`SharePointClient.ListSitesAsAdminAsync`) reads the admin centre's own site list, `DO_NOT_DELETE_SPLIST_TENANTADMIN_AGGREGATED_SITECOLLECTIONS`. It's undocumented, indexed, and over the 5,000-item threshold. What was checked against a 6,113-site tenant:
   - These work: unfiltered paging sorted by the Title index; one `Contains` (or `And` of `Contains`) on Title or SiteUrl
   - These are refused: `Or`; `Where` combined with `UseIndexForOrderBy`; a term matching thousands of rows
   - So a search is two queries in one cursor (`t:` titles, then `u:` URLs), and tenants without the list fall back to the tenant API (`o:` offsets)
 - Sites paging is cursor-based (`SitePage.Next`), passed back as is by the UI and by MCP's `search_sites`
-- The dev server port is 5279, because 5173 is often taken by other projects on this machine
 - CSOM calls, WAM and certificate sign-in can't be tested without a tenant. The unit tests cover everything around them

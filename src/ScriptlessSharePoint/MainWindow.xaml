@@ -1,10 +1,406 @@
-<Window x:Class="ScriptlessSharePoint.App.MainWindow"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
-        Title="Scriptless SharePoint"
-        Icon="Assets/app.ico"
-        Width="1200" Height="760" MinWidth="760" MinHeight="520"
-        WindowStartupLocation="CenterScreen">
-    <wv2:WebView2 x:Name="Web" />
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    File Size's layout: the title and the search in the title bar, the
+    connections down the left as Settings has its categories, and the page
+    beside them. On a connection's page: who it's signed in as, the table of
+    site collections (opened in place, down to folders, files and items),
+    and beside it the pane that acts on what's ticked.
+-->
+<Window
+    x:Class="ScriptlessSharePoint.App.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:ScriptlessSharePoint.App"
+    Title="Scriptless SharePoint">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="Root">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="48" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TitleBar x:Name="AppTitleBar" Title="Scriptless SharePoint" IsBackButtonVisible="False" IsPaneToggleButtonVisible="False">
+            <TitleBar.IconSource>
+                <ImageIconSource ImageSource="ms-appx:///Assets/logo.png" />
+            </TitleBar.IconSource>
+            <TitleBar.Content>
+                <AutoSuggestBox x:Name="SearchBox"
+                                QueryIcon="Find"
+                                PlaceholderText="Search site collections by title or address"
+                                MinWidth="300"
+                                MaxWidth="640"
+                                HorizontalAlignment="Stretch"
+                                VerticalAlignment="Center"
+                                TextChanged="OnSearchChanged"
+                                QuerySubmitted="OnSearchSubmitted" />
+            </TitleBar.Content>
+        </TitleBar>
+
+        <NavigationView x:Name="Nav"
+                        Grid.Row="1"
+                        PaneDisplayMode="Left"
+                        IsBackButtonVisible="Collapsed"
+                        IsPaneToggleButtonVisible="False"
+                        IsSettingsVisible="True"
+                        IsTitleBarAutoPaddingEnabled="False"
+                        OpenPaneLength="300"
+                        SelectionChanged="OnNavSelectionChanged"
+                        ItemInvoked="OnNavItemInvoked">
+            <!-- Where Settings has the account: who the connection is signed in as -->
+            <NavigationView.PaneHeader>
+                <Grid Padding="16,4,16,20" ColumnSpacing="14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <PersonPicture x:Name="AccountPicture" Width="56" Height="56" />
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock x:Name="AccountName" Style="{StaticResource BodyStrongTextBlockStyle}" TextTrimming="CharacterEllipsis" Text="Not signed in" />
+                        <TextBlock x:Name="AccountDetail" Style="{StaticResource CaptionSecondary}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
+                    </StackPanel>
+                </Grid>
+            </NavigationView.PaneHeader>
+
+            <NavigationView.FooterMenuItems>
+                <NavigationViewItem x:Name="AddConnectionItem" Content="Add a connection" SelectsOnInvoked="False">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE710;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+            </NavigationView.FooterMenuItems>
+
+            <Grid>
+                <!-- ================= no connections yet ================= -->
+                <StackPanel x:Name="WelcomePage" Visibility="Collapsed" MaxWidth="520" Spacing="14"
+                            HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Image Source="ms-appx:///Assets/logo.png" Width="88" Height="88" />
+                    <TextBlock Text="Welcome to Scriptless SharePoint" Style="{StaticResource SubtitleTextBlockStyle}" HorizontalAlignment="Center" />
+                    <TextBlock Style="{StaticResource SecondaryText}" TextWrapping="Wrap" TextAlignment="Center"
+                               Text="Everything the SharePoint Online Management Shell does with sites, lists, libraries and files, without PowerShell. Start with a connection to your tenant." />
+                    <Button Style="{StaticResource AccentButtonStyle}" HorizontalAlignment="Center" Click="OnAddConnection" Padding="20,8,20,8">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon Glyph="&#xE710;" FontSize="14" />
+                            <TextBlock Text="Add a connection" />
+                        </StackPanel>
+                    </Button>
+                    <TextBlock Style="{StaticResource CaptionSecondary}" TextAlignment="Center"
+                               Text="Sign in with your Windows account, another account, an app with a certificate, or an access token." />
+                </StackPanel>
+
+                <!-- ================= a connection ================= -->
+                <Grid x:Name="TenantPage" Padding="36,0,36,24" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- The page title, and the tools for the table -->
+                    <Grid Margin="0,0,0,20">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="PageTitle" Style="{StaticResource PageTitle}" VerticalAlignment="Center" Margin="0,0,16,0" />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                            <Button x:Name="CollapseButton" Style="{StaticResource ToolButton}" Click="OnCollapseAll" ToolTipService.ToolTip="Close every open row" AutomationProperties.Name="Close every open row">
+                                <FontIcon Glyph="&#xE70E;" FontSize="16" />
+                            </Button>
+                            <Button x:Name="RefreshButton" Style="{StaticResource ToolButton}" Click="OnRefresh" ToolTipService.ToolTip="Load the site collections again (F5)" AutomationProperties.Name="Load the site collections again (F5)">
+                                <FontIcon Glyph="&#xE72C;" FontSize="16" />
+                            </Button>
+                            <ToggleButton x:Name="PaneToggle" Style="{StaticResource ToolToggle}" IsChecked="True" Margin="4,0,0,0"
+                                          Click="OnPaneToggle" ToolTipService.ToolTip="Show or hide the commands for what's ticked" AutomationProperties.Name="Show or hide the commands for what's ticked">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <FontIcon Glyph="&#xE762;" FontSize="16" />
+                                    <InfoBadge x:Name="SelectionBadge" Visibility="Collapsed" />
+                                </StackPanel>
+                            </ToggleButton>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- The tenant, as Settings shows an account: its picture, its name, and how it's signed in -->
+                    <Grid Grid.Row="1" ColumnSpacing="24" Margin="0,0,0,16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Border Width="88" Height="88" CornerRadius="8" Style="{StaticResource Card}">
+                            <Image Source="ms-appx:///Assets/logo.png" Width="56" Height="56" />
+                        </Border>
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                            <TextBlock x:Name="TenantTitle" Style="{StaticResource SubtitleTextBlockStyle}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
+                            <HyperlinkButton x:Name="TenantLink" Padding="0" Click="OnTenantLink" />
+                            <TextBlock x:Name="TenantDetail" Style="{StaticResource CaptionSecondary}" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="2" Width="320" VerticalAlignment="Center" Spacing="6">
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="StatusTitle" Style="{StaticResource BodyStrongTextBlockStyle}" VerticalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
+                                <Button x:Name="SignInButton" Grid.Column="1" MinWidth="96" Content="Sign in" Style="{StaticResource AccentButtonStyle}"
+                                        Click="OnSignIn" Visibility="Collapsed" />
+                            </Grid>
+                            <ProgressBar x:Name="BusyBar" IsIndeterminate="True" Visibility="Collapsed" />
+                            <TextBlock x:Name="StatusText" Style="{StaticResource CaptionSecondary}" />
+                            <HyperlinkButton x:Name="ShowAllButton" Content="Show every site collection" Padding="0" Click="OnShowAll" Visibility="Collapsed" />
+                        </StackPanel>
+                    </Grid>
+
+                    <InfoBar x:Name="ErrorBar" Grid.Row="2" Severity="Error" IsOpen="False" Margin="0,0,0,12">
+                        <InfoBar.ActionButton>
+                            <Button x:Name="ErrorSignIn" Content="Sign in" Click="OnSignIn" Visibility="Collapsed" />
+                        </InfoBar.ActionButton>
+                    </InfoBar>
+
+                    <!-- The table and, beside it, what to do with what's ticked -->
+                    <Grid Grid.Row="3" ColumnSpacing="16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition x:Name="PaneColumn" Width="380" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border Style="{StaticResource Card}" Padding="4,4,4,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+
+                                <Border BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1" Margin="-4,0,-4,0" Padding="4,0,4,0" Height="34">
+                                    <Grid Margin="4,0,4,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" MinWidth="220" />
+                                            <ColumnDefinition Width="{x:Bind local:Columns.Current.Type, Mode=OneWay}" />
+                                            <ColumnDefinition Width="{x:Bind local:Columns.Current.Items, Mode=OneWay}" />
+                                            <ColumnDefinition Width="{x:Bind local:Columns.Current.Size, Mode=OneWay}" />
+                                            <ColumnDefinition Width="{x:Bind local:Columns.Current.Modified, Mode=OneWay}" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Name" Style="{StaticResource ColumnHeader}" Margin="62,0,8,0" />
+                                        <TextBlock Grid.Column="1" Text="Type" Style="{StaticResource ColumnHeader}" />
+                                        <TextBlock Grid.Column="2" Text="Items" Style="{StaticResource ColumnHeader}" HorizontalAlignment="Right" />
+                                        <TextBlock Grid.Column="3" Text="Size" Style="{StaticResource ColumnHeader}" HorizontalAlignment="Right" />
+                                        <TextBlock Grid.Column="4" Text="Modified" Style="{StaticResource ColumnHeader}" />
+                                    </Grid>
+                                </Border>
+
+                                <ListView x:Name="Table"
+                                          Grid.Row="1"
+                                          SelectionMode="None"
+                                          ItemContainerStyle="{StaticResource TableRow}">
+                                    <ListView.ItemTemplate>
+                                        <DataTemplate x:DataType="local:Row">
+                                            <Grid Height="34" Background="Transparent" DoubleTapped="{x:Bind OnDoubleTapped}" ToolTipService.ToolTip="{x:Bind ToolTip, Mode=OneWay}" AutomationProperties.Name="{x:Bind ToolTip, Mode=OneWay}">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" MinWidth="220" />
+                                                    <ColumnDefinition Width="{x:Bind local:Columns.Current.Type, Mode=OneWay}" />
+                                                    <ColumnDefinition Width="{x:Bind local:Columns.Current.Items, Mode=OneWay}" />
+                                                    <ColumnDefinition Width="{x:Bind local:Columns.Current.Size, Mode=OneWay}" />
+                                                    <ColumnDefinition Width="{x:Bind local:Columns.Current.Modified, Mode=OneWay}" />
+                                                </Grid.ColumnDefinitions>
+
+                                                <!-- name: indent, chevron, tick, icon, title -->
+                                                <StackPanel Orientation="Horizontal" Margin="{x:Bind Indent}" Spacing="2" Visibility="{x:Bind IsNode}">
+                                                    <Grid Width="24" Height="24" VerticalAlignment="Center">
+                                                        <Button Style="{StaticResource Chevron}" Click="{x:Bind OnChevron}" AutomationProperties.Name="{x:Bind OpenName, Mode=OneWay}" Visibility="{x:Bind ShowChevron, Mode=OneWay}" Opacity="{x:Bind ChevronOpacity}" IsTabStop="False">
+                                                            <FontIcon Glyph="{x:Bind ChevronGlyph, Mode=OneWay}" FontSize="10" />
+                                                        </Button>
+                                                        <ProgressRing Width="14" Height="14" IsActive="{x:Bind IsLoading, Mode=OneWay}" Visibility="{x:Bind IsLoading, Mode=OneWay}" />
+                                                    </Grid>
+                                                    <CheckBox IsChecked="{x:Bind IsChecked, Mode=TwoWay}" AutomationProperties.Name="{x:Bind TickName, Mode=OneWay}" MinWidth="0" Width="32" Padding="0" VerticalAlignment="Center" />
+                                                    <FontIcon Glyph="{x:Bind Glyph}" FontSize="16" Margin="0,0,10,0" VerticalAlignment="Center" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                                    <TextBlock Text="{x:Bind Title, Mode=OneWay}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                                </StackPanel>
+
+                                                <!-- a note under an open row: empty, an error, loading -->
+                                                <TextBlock Grid.ColumnSpan="5" Margin="{x:Bind Indent}" Padding="60,0,8,0" VerticalAlignment="Center"
+                                                           Text="{x:Bind Message, Mode=OneWay}" Visibility="{x:Bind IsMessage}" FontStyle="Italic"
+                                                           Style="{StaticResource SecondaryText}" TextTrimming="CharacterEllipsis" />
+
+                                                <!-- the next page of a long list -->
+                                                <HyperlinkButton Grid.ColumnSpan="5" Margin="{x:Bind Indent}" Padding="60,0,8,0" VerticalAlignment="Center"
+                                                                 Content="{x:Bind Message, Mode=OneWay}" Visibility="{x:Bind IsMore}" Click="{x:Bind OnMore}" />
+
+                                                <TextBlock Grid.Column="1" Text="{x:Bind TypeText, Mode=OneWay}" Style="{StaticResource TextCell}" />
+                                                <TextBlock Grid.Column="2" Text="{x:Bind ItemsText, Mode=OneWay}" Style="{StaticResource NumberCell}" />
+                                                <TextBlock Grid.Column="3" Text="{x:Bind SizeText, Mode=OneWay}" Style="{StaticResource NumberCell}" />
+                                                <TextBlock Grid.Column="4" Text="{x:Bind ModifiedText, Mode=OneWay}" Style="{StaticResource TextCell}" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListView.ItemTemplate>
+                                </ListView>
+
+                                <!-- No rows: signing in, loading, nothing found -->
+                                <StackPanel x:Name="EmptyState" Grid.Row="1" Spacing="12" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed">
+                                    <ProgressRing x:Name="EmptyRing" Width="32" Height="32" IsActive="False" />
+                                    <TextBlock x:Name="EmptyText" MaxWidth="420" TextAlignment="Center" TextWrapping="Wrap" Style="{StaticResource SecondaryText}" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- ================= the pane ================= -->
+                        <Border x:Name="Pane" Grid.Column="1" Style="{StaticResource Card}">
+                            <Grid>
+                                <!-- what's ticked, and the commands for it -->
+                                <Grid x:Name="OverviewView" RowSpacing="8" Padding="0,12,0,0">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                    <Grid Padding="16,0,8,0" ColumnSpacing="4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock Text="Selected" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                            <TextBlock x:Name="SelectedSummary" Style="{StaticResource CaptionSecondary}" />
+                                        </StackPanel>
+                                        <HyperlinkButton x:Name="ClearButton" Grid.Column="1" Content="Clear" Padding="6,4,6,4" VerticalAlignment="Center" Click="OnClearSelection" Visibility="Collapsed" />
+                                        <Button x:Name="SaveSelectionButton" Grid.Column="2" Style="{StaticResource ToolButton}" Width="32" Click="OnSaveSelection"
+                                                Visibility="Collapsed" ToolTipService.ToolTip="Save the selection (Ctrl+S)" AutomationProperties.Name="Save the selection">
+                                            <FontIcon Glyph="&#xE74E;" FontSize="14" />
+                                        </Button>
+                                        <Button Grid.Column="3" Style="{StaticResource ToolButton}" Width="32" Click="OnHidePane" ToolTipService.ToolTip="Hide" AutomationProperties.Name="Hide the pane">
+                                            <FontIcon Glyph="&#xE76C;" FontSize="12" />
+                                        </Button>
+                                    </Grid>
+
+                                    <!-- what's ticked, in short; opens to the full list -->
+                                    <Expander x:Name="SelectedExpander" Grid.Row="1" Margin="12,0,12,0" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                              Padding="0" Visibility="Collapsed">
+                                        <Expander.Header>
+                                            <TextBlock x:Name="SelectedExpanderHeader" TextTrimming="CharacterEllipsis" />
+                                        </Expander.Header>
+                                        <ListView x:Name="SelectedList" SelectionMode="None" MaxHeight="220" ItemContainerStyle="{StaticResource TableRow}" />
+                                    </Expander>
+
+                                    <StackPanel Grid.Row="2" Padding="16,0,16,0" Spacing="8">
+                                        <TextBlock x:Name="NothingSelected" Style="{StaticResource CaptionSecondary}"
+                                                   Text="Tick site collections, lists, libraries, folders, files or items in the table to see what you can do with them. These are for the whole tenant." />
+                                        <ComboBox x:Name="KindPicker" Header="Act on" HorizontalAlignment="Stretch" SelectionChanged="OnKindChanged" />
+                                        <AutoSuggestBox x:Name="CommandFilter" PlaceholderText="Find a command" QueryIcon="Filter" TextChanged="OnCommandFilterChanged" />
+                                    </StackPanel>
+
+                                    <ScrollViewer Grid.Row="3" Padding="4,0,4,8">
+                                        <StackPanel x:Name="CommandList" Padding="0,0,8,0" />
+                                    </ScrollViewer>
+                                </Grid>
+
+                                <!-- one command: its inputs, then Run -->
+                                <Grid x:Name="FormView" Visibility="Collapsed" RowSpacing="8" Padding="0,8,0,0">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <Grid Padding="8,0,16,0" ColumnSpacing="4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button Style="{StaticResource ToolButton}" Click="OnBackToCommands" ToolTipService.ToolTip="Back to the commands" AutomationProperties.Name="Back to the commands">
+                                            <FontIcon Glyph="&#xE72B;" FontSize="14" />
+                                        </Button>
+                                        <TextBlock x:Name="FormTitle" Grid.Column="1" Style="{StaticResource BodyStrongTextBlockStyle}" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                    </Grid>
+                                    <ScrollViewer Grid.Row="1" Padding="16,0,16,0">
+                                        <StackPanel Spacing="12" Padding="0,0,0,12">
+                                            <TextBlock x:Name="FormDescription" TextWrapping="Wrap" />
+                                            <TextBlock x:Name="FormPowerShell" Style="{StaticResource CaptionSecondary}" IsTextSelectionEnabled="True" />
+                                            <InfoBar x:Name="FormNote" IsOpen="False" IsClosable="False" Severity="Informational" />
+                                            <StackPanel x:Name="FormFields" Spacing="14" />
+                                            <TextBlock x:Name="FormProblems" Foreground="{ThemeResource SystemFillColorCriticalBrush}" TextWrapping="Wrap" Visibility="Collapsed" />
+                                        </StackPanel>
+                                    </ScrollViewer>
+                                    <Border Grid.Row="2" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,1,0,0" Padding="16,12,16,14">
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock x:Name="FormTargets" Style="{StaticResource CaptionSecondary}" VerticalAlignment="Center" />
+                                            <Button x:Name="RunButton" Grid.Column="1" Style="{StaticResource AccentButtonStyle}" MinWidth="96" Click="OnRun" />
+                                        </Grid>
+                                    </Border>
+                                </Grid>
+
+                                <!-- a run: how far it's got, and how each target went -->
+                                <Grid x:Name="ResultsView" Visibility="Collapsed" RowSpacing="8" Padding="0,12,0,0">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <StackPanel Padding="16,0,16,0" Spacing="6">
+                                        <TextBlock x:Name="ResultsTitle" Style="{StaticResource BodyStrongTextBlockStyle}" TextWrapping="Wrap" />
+                                        <TextBlock x:Name="ResultsSummary" Style="{StaticResource CaptionSecondary}" />
+                                        <ProgressBar x:Name="ResultsBar" />
+                                    </StackPanel>
+                                    <ListView x:Name="ResultsList" Grid.Row="1" SelectionMode="None" Padding="4,0,4,0" />
+                                    <Border Grid.Row="2" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,1,0,0" Padding="16,12,16,14">
+                                        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                                            <Button x:Name="CopyResultsButton" Content="Copy" Click="OnCopyResults" ToolTipService.ToolTip="Copy the results as text" AutomationProperties.Name="Copy the results as text" />
+                                            <Button x:Name="SelectFailedButton" Content="Tick the failed ones" Click="OnSelectFailed" Visibility="Collapsed" />
+                                            <Button x:Name="CancelRunButton" Content="Cancel" Click="OnCancelRun" />
+                                            <Button x:Name="DoneButton" Content="Done" Style="{StaticResource AccentButtonStyle}" Click="OnResultsDone" Visibility="Collapsed" />
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </Grid>
+
+                <!-- ================= Settings ================= -->
+                <ScrollViewer x:Name="SettingsPage" Visibility="Collapsed">
+                    <StackPanel Padding="36,0,36,28" MaxWidth="1000" HorizontalAlignment="Left" MinWidth="560">
+                        <TextBlock Text="Settings" Style="{StaticResource PageTitle}" Margin="0,0,0,4" />
+
+                        <TextBlock Text="AI apps" Style="{StaticResource GroupHeader}" />
+                        <TextBlock Style="{StaticResource CaptionSecondary}" Margin="1,0,0,10"
+                                   Text="Scriptless SharePoint comes with an MCP server, so AI apps on this PC can search your sites and manage site collection app catalogs with the connections set up here. Sign-ins and secrets stay in the app." />
+                        <StackPanel x:Name="AiSnippets" Spacing="4" />
+
+                        <TextBlock Text="About" Style="{StaticResource GroupHeader}" />
+                        <Border Style="{StaticResource Card}" CornerRadius="{ThemeResource ControlCornerRadius}" Padding="16,14,16,14" Margin="0,0,0,4">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Connections, sign-ins and logs" />
+                                    <TextBlock x:Name="DataFolderText" Style="{StaticResource CaptionSecondary}" IsTextSelectionEnabled="True" />
+                                </StackPanel>
+                                <Button Grid.Column="1" Content="Open folder" Click="OnOpenDataFolder" VerticalAlignment="Center" />
+                            </Grid>
+                        </Border>
+                        <Border Style="{StaticResource Card}" CornerRadius="{ThemeResource ControlCornerRadius}" Padding="16,14,16,14">
+                            <StackPanel>
+                                <TextBlock Text="Privacy" />
+                                <TextBlock Style="{StaticResource CaptionSecondary}"
+                                           Text="Scriptless SharePoint talks only to Microsoft's sign-in and your SharePoint tenant. It has no analytics and no tracking. Tokens stay in Windows' encrypted token cache, on this PC." />
+                            </StackPanel>
+                        </Border>
+                        <TextBlock x:Name="VersionText" Margin="1,28,0,0" IsTextSelectionEnabled="True"
+                                   Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+        </NavigationView>
+    </Grid>
 </Window>

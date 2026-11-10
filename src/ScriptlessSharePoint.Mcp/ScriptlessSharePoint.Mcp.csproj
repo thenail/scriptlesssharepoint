@@ -9,9 +9,6 @@
     <RootNamespace>ScriptlessSharePoint.Mcp</RootNamespace>
     <ApplicationIcon>..\ScriptlessSharePoint\Assets\app.ico</ApplicationIcon>
     <InvariantGlobalization>false</InvariantGlobalization>
-    <!-- not for UI: the same runtime profile as the app's, so the two share one
-         package folder (package/build.ps1) without different copies of a file -->
-    <UseWPF>true</UseWPF>
   </PropertyGroup>
 
   <ItemGroup>

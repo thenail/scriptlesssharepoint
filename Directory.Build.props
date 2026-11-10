@@ -1,7 +1,7 @@
 <Project>
   <!-- Shared by every project. The version is the package's too (package/build.ps1). -->
   <PropertyGroup>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Product>Scriptless SharePoint</Product>
     <Company>Scriptless SharePoint</Company>
     <Copyright>Copyright © Scriptless SharePoint</Copyright>

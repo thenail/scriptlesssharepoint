@@ -12,7 +12,7 @@ namespace ScriptlessSharePoint.SharePoint;
 /// makes its own ClientContext with a fresh token, so expiry and throttling
 /// retries stay simple.
 /// </summary>
-public sealed class SharePointClient
+public sealed partial class SharePointClient
 {
     /// <summary>List templates of a site collection's "Apps for SharePoint" library (336) and the tenant's (330).</summary>
     private const int SiteAppCatalogTemplate = 336;
@@ -426,7 +426,7 @@ public sealed class SharePointClient
     }
 
     /// <summary>A ClientContext for a URL, with a bearer token for its host.</summary>
-    private async Task<ClientContext> ContextAsync(string url, CancellationToken ct)
+    internal async Task<ClientContext> ContextAsync(string url, CancellationToken ct)
     {
         var token = await tokens.GetTokenAsync(TenantUrls.Resource(url), Interactive, ct).ConfigureAwait(false);
         var ctx = new ClientContext(url) { ClientTag = $"ScriptlessSharePoint/{AppInfo.Version}" };
@@ -439,7 +439,7 @@ public sealed class SharePointClient
         return ctx;
     }
 
-    private static async Task<T> RetryAsync<T>(Func<Task<T>> operation, CancellationToken ct)
+    internal static async Task<T> RetryAsync<T>(Func<Task<T>> operation, CancellationToken ct)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -454,7 +454,7 @@ public sealed class SharePointClient
         }
     }
 
-    private static bool IsAccessDenied(Exception e) =>
+    public static bool IsAccessDenied(Exception e) =>
         e is ServerUnauthorizedAccessException ||
         (e is System.Net.WebException { Response: System.Net.HttpWebResponse r } && (int)r.StatusCode is 401 or 403) ||
         (e is HttpRequestException { StatusCode: System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden });

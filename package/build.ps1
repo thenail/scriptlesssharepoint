@@ -1,5 +1,5 @@
-# Builds the Microsoft Store package: ScriptlessSharePoint.exe (the app: a
-# WebView2 host with the web UI from web/), scriptless-sharepoint-mcp.exe
+# Builds the Microsoft Store package: ScriptlessSharePoint.exe (the app:
+# WinUI 3 with the Windows App SDK inside it), scriptless-sharepoint-mcp.exe
 # (the MCP server), their shared .NET runtime (self-contained, x64), the
 # tiles and the MCP bundle manifest, as one MSIX.
 #
@@ -12,8 +12,7 @@
 #
 # The Store identity and built-in app ID come from identity.json, or
 # SSP_STORE_NAME, SSP_STORE_PUBLISHER, SSP_STORE_PUBLISHER_NAME and
-# SSP_CLIENT_ID. Windows only; needs the .NET 10 SDK, Node with Yarn 1, and
-# the Windows SDK.
+# SSP_CLIENT_ID. Windows only; needs the .NET 10 SDK and the Windows SDK.
 param(
     [switch]$Sign,
     [switch]$Register
@@ -59,24 +58,15 @@ if ($clientId -and -not [guid]::TryParse($clientId, [ref][guid]::Empty)) { throw
 Write-Host "Scriptless SharePoint $msixVersion, $($identity.name)"
 Write-Host ($(if ($clientId) { "  Built-in app ID (override): $clientId" } else { '  Built-in app ID: the one in ScriptlessSharePoint.Core.csproj' }))
 
-# 1. the web UI (React, Fluent UI) and the executables, self-contained, so
-#    the package needs no .NET install; the app's publish takes web/dist
-Step 'web UI (yarn build)'
-Push-Location (Join-Path $root 'web')
-try {
-    Invoke 'yarn' @('install', '--frozen-lockfile', '--non-interactive', '--silent')
-    Invoke 'yarn' @('build')
-}
-finally {
-    Pop-Location
-}
+# 1. the executables, self-contained (the .NET runtime, and the Windows App
+#    SDK for the app), so the package needs nothing else installed
 Remove-Item $publish -Recurse -Force -ErrorAction SilentlyContinue
 foreach ($p in @(
         @{ Project = 'src\ScriptlessSharePoint.Mcp'; Out = 'mcp' },
         @{ Project = 'src\ScriptlessSharePoint'; Out = 'app' })) {
     Step "dotnet publish $($p.Project)"
     $publishArgs = @('publish', (Join-Path $root $p.Project), '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true',
-        '-p:DebugType=none', '-o', (Join-Path $publish $p.Out), '--nologo', '-v', 'quiet')
+        '-p:Platform=x64', '-p:DebugType=none', '-o', (Join-Path $publish $p.Out), '--nologo', '-v', 'quiet')
     # only an override: an empty -p would replace the project's built-in ID
     if ($clientId) { $publishArgs += "-p:SspClientId=$clientId" }
     Invoke 'dotnet' $publishArgs
@@ -109,11 +99,30 @@ $appx = (Get-Content (Join-Path $here 'AppxManifest.xml') -Raw).
     Replace('{{VERSION}}', $msixVersion)
 [System.IO.File]::WriteAllText((Join-Path $layout 'AppxManifest.xml'), $appx, [System.Text.UTF8Encoding]::new($false))
 
-# 3. resources.pri: lets Windows pick the right scale of each image
+# 3. resources.pri: lets Windows pick the right scale of each tile, and
+#    merges the app's own .pri files (its XAML, WinUI's controls) into it,
+#    since a packaged app reads its resources from resources.pri
 Step 'resources.pri (makepri)'
 $makepri = SdkTool 'makepri.exe'
 $priconfig = Join-Path $dist 'priconfig.xml'
 Invoke $makepri @('createconfig', '/cf', $priconfig, '/dq', 'en-US', '/pv', '10.0.0', '/o') | Out-Null
+# the tiles as files (Assets\), and the app's and WinUI's own .pri files
+# merged in, one index each (they list their own files: indexing those
+# again from the folder would make conflicting resources)
+$config = [xml](Get-Content $priconfig)
+# one package, not a bundle: every language and scale stays in resources.pri
+[void]$config.resources.RemoveChild($config.resources.packaging)
+$files = $config.resources.index
+$template = $files.Clone()
+$files.SetAttribute('startIndexAt', '\Assets')
+foreach ($i in @($files.'indexer-config')) { if ($i.type -ne 'folder') { [void]$files.RemoveChild($i) } }
+Get-ChildItem $layout -Filter *.pri | Where-Object Name -notlike 'resources*' | ForEach-Object {
+    $pri = $template.Clone()
+    $pri.SetAttribute('startIndexAt', "\$($_.Name)")
+    foreach ($i in @($pri.'indexer-config')) { if ($i.type -ne 'PRI') { [void]$pri.RemoveChild($i) } }
+    [void]$config.resources.AppendChild($pri)
+}
+$config.Save($priconfig)
 Invoke $makepri @('new', '/pr', $layout, '/cf', $priconfig, '/mn', (Join-Path $layout 'AppxManifest.xml'), '/of', (Join-Path $layout 'resources.pri'), '/o') | Out-Null
 
 if ($Register) {

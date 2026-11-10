@@ -4,6 +4,3 @@ obj/
 *.user
 TestResults/
 package/dist/
-web/node_modules/
-web/dist/
-web/*.tsbuildinfo
