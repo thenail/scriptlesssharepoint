@@ -1010,7 +1010,7 @@ public sealed partial class MainWindow
         }
         if (entry.First.Plan is { } planId)
         {
-            Nav.SelectedItem = NavItem(PlanTag + planId);
+            _ = OpenPlanAsync(planId);
             return;
         }
         if (CommandCatalog.Find(entry.First.CommandId) is { } c)

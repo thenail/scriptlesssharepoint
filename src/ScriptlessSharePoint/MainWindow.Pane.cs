@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Media;
 using ScriptlessSharePoint.Commands;
 using ScriptlessSharePoint.Connections;
 using ScriptlessSharePoint.History;
+using ScriptlessSharePoint.Plans;
 using ScriptlessSharePoint.SharePoint;
 
 namespace ScriptlessSharePoint.App;
@@ -26,6 +27,15 @@ public sealed partial class MainWindow
     private Command? command;
     private readonly List<(CommandParameter Parameter, FrameworkElement Control, Func<string?> Value)> fields = [];
 
+    /// <summary>
+    /// The form edits a plan's step instead of running: the plan, which step
+    /// (its count for a new one at the end), and the kind it runs on there.
+    /// </summary>
+    private (Plan Plan, int Index, NodeKind Kind)? editingStep;
+
+    /// <summary>The kind the form's inputs are for: the step's, else the picked one.</summary>
+    private NodeKind FormKind => editingStep?.Kind ?? pickedKind;
+
     /// <summary>The job the pane's results follow.</summary>
     private Job? watchedJob;
     private JobBinding? paneBinding;
@@ -43,12 +53,15 @@ public sealed partial class MainWindow
     private void UpdatePane()
     {
         var count = selection.Count;
+        UpdateUndo();
         SelectionBadge.Value = count;
         SelectionBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
         ClearButton.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
         SaveSelectionButton.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
         UpdateSaveButton();
         NothingSelected.Visibility = count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        // with nothing ticked there's only the tenant to act on
+        KindScroller.Visibility = count == 0 ? Visibility.Collapsed : Visibility.Visible;
         SelectedSummary.Text = count == 0
             ? "Nothing ticked"
             : string.Join(" · ", selection.Values.GroupBy(n => n.Kind).OrderBy(g => g.Key).Select(g => NodeKinds.Count(g.Key, g.Count())));
@@ -67,16 +80,19 @@ public sealed partial class MainWindow
             pickedKind = kinds[0];
         }
         fillingKinds = true;
-        KindPicker.Items.Clear();
+        KindBar.Items.Clear();
         foreach (var k in kinds)
         {
             var n = k == NodeKind.Tenant ? 0 : selection.Values.Count(x => x.Kind == k);
-            KindPicker.Items.Add(new ComboBoxItem { Content = k == NodeKind.Tenant ? "The tenant" : $"{NodeKinds.Heading(k)} ({n:N0})", Tag = k });
+            var tab = new SelectorBarItem { Text = k == NodeKind.Tenant ? "Tenant" : $"{NodeKinds.Heading(k)} {n:N0}", Tag = k };
+            ToolTipService.SetToolTip(tab, k == NodeKind.Tenant ? "Commands for the whole tenant" : $"Commands for the {NodeKinds.Count(k, n)} ticked");
+            KindBar.Items.Add(tab);
         }
-        KindPicker.SelectedIndex = kinds.IndexOf(pickedKind);
+        KindBar.SelectedItem = KindBar.Items[kinds.IndexOf(pickedKind)];
         fillingKinds = false;
 
-        if (FormView.Visibility == Visibility.Visible && command is not null)
+        // (a plan's step being edited doesn't depend on what's ticked)
+        if (FormView.Visibility == Visibility.Visible && command is not null && editingStep is null)
         {
             if (command.AppliesTo(pickedKind) && Targets(pickedKind).Count > 0)
             {
@@ -128,9 +144,9 @@ public sealed partial class MainWindow
         }
     }
 
-    private void OnKindChanged(object sender, SelectionChangedEventArgs e)
+    private void OnKindChanged(SelectorBar sender, SelectorBarSelectionChangedEventArgs args)
     {
-        if (fillingKinds || KindPicker.SelectedItem is not ComboBoxItem { Tag: NodeKind kind })
+        if (fillingKinds || sender.SelectedItem is not { Tag: NodeKind kind })
         {
             return;
         }
@@ -146,6 +162,8 @@ public sealed partial class MainWindow
     {
         CommandList.Children.Clear();
         var filter = CommandFilter.Text?.Trim() ?? "";
+        // the plans that fit come first: they're what this tenant's been set up to do
+        AddPlansToCommandList(filter);
         var commands = CommandCatalog.For(pickedKind)
             .Where(c => filter.Length == 0 ||
                         c.Title.Contains(filter, StringComparison.CurrentCultureIgnoreCase) ||
@@ -160,7 +178,6 @@ public sealed partial class MainWindow
                 Style = (Style)Application.Current.Resources["CaptionSecondary"],
                 Margin = new Thickness(12, 8, 12, 0),
             });
-            AddPlansToCommandList(filter);
             return;
         }
         var critical = (Brush)Application.Current.Resources["SystemFillColorCriticalBrush"];
@@ -198,7 +215,6 @@ public sealed partial class MainWindow
                 CommandList.Children.Add(button);
             }
         }
-        AddPlansToCommandList(filter);
     }
 
     // ---- a command's inputs ----
@@ -209,7 +225,9 @@ public sealed partial class MainWindow
         command = c;
         var targets = Targets(pickedKind);
         FormTitle.Text = c.Title;
-        FormDescription.Text = c.Description;
+        FormDescription.Text = editingStep is null
+            ? c.Description
+            : $"{c.Description}\n\nInputs can hold the plan's {{variables}}, and {string.Join(", ", PlanValues.BuiltIn.Select(b => $"{{{b}}}"))} from each item.";
         FormPowerShell.Text = c.PowerShell is null ? "" : $"In PowerShell: {c.PowerShell}";
         FormPowerShell.Visibility = c.PowerShell is null ? Visibility.Collapsed : Visibility.Visible;
         FormNote.IsOpen = c.Destructive || c.NeedsAdmin;
@@ -218,8 +236,20 @@ public sealed partial class MainWindow
             ? "This changes or removes things in a way that can't always be undone. You'll be asked first."
             : "Needs a SharePoint administrator, or an app with Sites.FullControl.All.";
         FormProblems.Visibility = Visibility.Collapsed;
-        FormTargets.Text = $"Runs on {TargetsText(pickedKind, targets.Count)}";
-        RunButton.Content = c.After == After.Tick ? "Tick" : c.ReadOnly ? "Show" : "Run";
+        if (editingStep is { } edit)
+        {
+            FormTargets.Text = edit.Index < edit.Plan.Steps.Count
+                ? $"Step {edit.Index + 1} of “{edit.Plan.Name}”"
+                : $"New step {edit.Index + 1} of “{edit.Plan.Name}”";
+            RunButton.Content = "Save step";
+            AddToPlanButton.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            FormTargets.Text = $"Runs on {TargetsText(pickedKind, targets.Count)}";
+            RunButton.Content = c.After == After.Tick ? "Tick" : c.ReadOnly ? "Show" : "Run";
+            AddToPlanButton.Visibility = Visibility.Visible;
+        }
 
         FormFields.Children.Clear();
         fields.Clear();
@@ -255,7 +285,7 @@ public sealed partial class MainWindow
         }
         foreach (var (p, _, _) in fields)
         {
-            if (!p.IsShown(args, pickedKind))
+            if (!p.IsShown(args, FormKind))
             {
                 args[p.Name] = null;
             }
@@ -273,7 +303,7 @@ public sealed partial class MainWindow
         }
         foreach (var (p, control, _) in fields)
         {
-            control.Visibility = p.IsShown(args, pickedKind) ? Visibility.Visible : Visibility.Collapsed;
+            control.Visibility = p.IsShown(args, FormKind) ? Visibility.Visible : Visibility.Collapsed;
         }
     }
 
@@ -283,17 +313,19 @@ public sealed partial class MainWindow
     /// <summary>The control for one input, and how to read it; <paramref name="changed"/> runs when a choice or switch changes.</summary>
     private (FrameworkElement Control, Func<string?> Value) Field(CommandParameter p, string? value, Action changed)
     {
+        // most inputs are needed: the few that aren't say so
+        var label = p.Required || p.Kind is ParameterKind.Toggle or ParameterKind.Choice ? p.Label : $"{p.Label} (optional)";
         switch (p.Kind)
         {
             case ParameterKind.Toggle:
             {
-                var toggle = new ToggleSwitch { Header = p.Label, IsOn = value == "true" };
+                var toggle = new ToggleSwitch { Header = label, IsOn = value == "true" };
                 toggle.Toggled += (_, _) => changed();
                 return (WithHint(toggle, p.Hint), () => toggle.IsOn ? "true" : "false");
             }
             case ParameterKind.Choice:
             {
-                var box = new ComboBox { Header = p.Label, HorizontalAlignment = HorizontalAlignment.Stretch, Description = Hint(p.Hint) };
+                var box = new ComboBox { Header = label, HorizontalAlignment = HorizontalAlignment.Stretch, Description = Hint(p.Hint) };
                 foreach (var choice in p.Choices)
                 {
                     box.Items.Add(choice.Label);
@@ -306,7 +338,7 @@ public sealed partial class MainWindow
             {
                 var number = new NumberBox
                 {
-                    Header = p.Label,
+                    Header = label,
                     Description = Hint(p.Hint),
                     PlaceholderText = p.Placeholder ?? "",
                     Value = long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) ? n : double.NaN,
@@ -317,7 +349,7 @@ public sealed partial class MainWindow
             }
             case ParameterKind.LocalFile or ParameterKind.LocalFolder:
             {
-                var box = new TextBox { Header = p.Label, Description = Hint(p.Hint), Text = value ?? "", PlaceholderText = p.Kind == ParameterKind.LocalFile ? "Choose a file" : "Choose a folder" };
+                var box = new TextBox { Header = label, Description = Hint(p.Hint), Text = value ?? "", PlaceholderText = p.Kind == ParameterKind.LocalFile ? "Choose a file" : "Choose a folder" };
                 var browse = new Button { Content = "Browse…", VerticalAlignment = VerticalAlignment.Bottom };
                 browse.Click += async (_, _) =>
                 {
@@ -339,7 +371,7 @@ public sealed partial class MainWindow
             {
                 var box = new TextBox
                 {
-                    Header = p.Label,
+                    Header = label,
                     Description = Hint(p.Hint),
                     PlaceholderText = p.Placeholder ?? "",
                     Text = value ?? "",
@@ -371,10 +403,21 @@ public sealed partial class MainWindow
         return panel;
     }
 
-    private void OnBackToCommands(object sender, RoutedEventArgs e) => ShowOverview();
+    private void OnBackToCommands(object sender, RoutedEventArgs e)
+    {
+        // from a plan's step: back to the plan
+        if (editingStep is { } edit)
+        {
+            editingStep = null;
+            ShowPlan(planStore.Load(edit.Plan.Id) ?? edit.Plan);
+            return;
+        }
+        ShowOverview();
+    }
 
     private void ShowOverview()
     {
+        editingStep = null;
         FormView.Visibility = Visibility.Collapsed;
         ResultsView.Visibility = Visibility.Collapsed;
         PlanView.Visibility = Visibility.Collapsed;
@@ -388,6 +431,11 @@ public sealed partial class MainWindow
     {
         if (command is not { } c)
         {
+            return;
+        }
+        if (editingStep is not null)
+        {
+            SaveStep(c);
             return;
         }
         var args = FormArgs();
@@ -437,6 +485,7 @@ public sealed partial class MainWindow
     private void WatchJob(Job job)
     {
         Unwatch();
+        editingStep = null;
         watchedJob = job;
         paneBinding = new JobBinding(job, ResultsList, UpdateWatched);
         FormView.Visibility = Visibility.Collapsed;
@@ -727,6 +776,7 @@ public sealed partial class MainWindow
     {
         var failed = WatchedResults().Where(r => !r.Result.Ok).Select(r => r.Target).ToList();
         Unwatch();
+        KeepTicksBefore($"Ticked the {failed.Count:N0} that failed", always: false);
         foreach (var key in selection.Keys.ToList())
         {
             Untick(key);

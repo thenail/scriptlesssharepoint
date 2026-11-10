@@ -137,7 +137,7 @@ public static partial class CommandCatalog
             [
                 new("name", "Name", ParameterKind.Text),
                 new("type", "Type", ParameterKind.Choice) { Choices = ColumnTypes, Default = "Text" },
-                new("choices", "Choices", ParameterKind.LongText) { Required = false, Hint = "For a choice column: one per line." },
+                new("choices", "Choices", ParameterKind.LongText) { Hint = "One per line.", ShowIf = new ShowIf("type", "Choice") },
                 Toggle("view", "Add it to the default view", true),
                 Toggle("required", "Require a value", false),
             ],

@@ -26,7 +26,11 @@ namespace ScriptlessSharePoint.App;
 /// </summary>
 public sealed partial class MainWindow
 {
-    private const string PlanTag = "plan:";
+    /// <summary>The Plans page's item in the navigation pane.</summary>
+    private const string PlansTag = "plans";
+
+    /// <summary>The plans seen so far, with when their prepared run was made: new ones (or new runs) from AI apps are announced.</summary>
+    private Dictionary<string, DateTimeOffset?>? knownPlans;
 
     private readonly PlanStore planStore = new();
 
@@ -46,50 +50,171 @@ public sealed partial class MainWindow
     private FileSystemWatcher? planWatcher;
     private DispatcherQueueTimer? planChanged;
 
-    // ---- in the navigation pane ----
+    // ---- the Plans page ----
 
-    /// <summary>The plans below the saved selections, for connections that still exist.</summary>
+    /// <summary>The plans changed: the Plans page (when it shows) and the pane's list for what's ticked.</summary>
     private void RefreshPlans()
     {
-        var was = navigating;
-        navigating = true;
+        if (PlansPage.Visibility == Visibility.Visible)
+        {
+            BuildPlansPage();
+        }
+        if (OverviewView.Visibility == Visibility.Visible)
+        {
+            BuildCommandList();
+        }
+    }
+
+    private void ShowPlansPage()
+    {
+        ShowPage(PlansPage);
+        BuildPlansPage();
+    }
+
+    /// <summary>Every plan, by connection: what it does, what it starts on, who made it, how it last went.</summary>
+    private void BuildPlansPage()
+    {
+        PlanCards.Children.Clear();
+        var connections = workspace.Load().Connections;
+        NewPlanButton.IsEnabled = connections.Count > 0;
+        var plans = planStore.List().Where(p => connections.Any(c => c.Id == p.ConnectionId)).ToList();
+        if (plans.Count == 0)
+        {
+            PlanCards.Children.Add(new TextBlock
+            {
+                Text = "No plans yet. Make one with New plan, or with Add to plan beside a command's Run. AI apps make them through the MCP server (Settings shows how to connect one).",
+                Style = (Style)Application.Current.Resources["CaptionSecondary"],
+                Margin = new Thickness(1, 8, 0, 0),
+            });
+            return;
+        }
+        var runs = historyStore.List().Where(r => r.Plan is not null).ToList();
+        foreach (var group in plans.GroupBy(p => p.ConnectionId))
+        {
+            if (connections.Count > 1)
+            {
+                PlanCards.Children.Add(new TextBlock
+                {
+                    Text = connections.First(c => c.Id == group.Key).Name,
+                    Style = (Style)Application.Current.Resources["GroupHeader"],
+                    Margin = new Thickness(1, PlanCards.Children.Count == 0 ? 8 : 24, 0, 6),
+                });
+            }
+            foreach (var plan in group)
+            {
+                PlanCards.Children.Add(PlanCard(plan, runs.Where(r => r.Plan == plan.Id).MaxBy(r => r.Started)));
+            }
+        }
+    }
+
+    private FrameworkElement PlanCard(Plan plan, RunRecord? last)
+    {
+        var caption = (Style)Application.Current.Resources["CaptionSecondary"];
+        var grid = new Grid { ColumnSpacing = 16 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.Children.Add(new FontIcon { Glyph = "\uE9D5", FontSize = 20, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 2, 0, 0) });
+
+        var text = new StackPanel { Spacing = 2 };
+        text.Children.Add(new TextBlock { Text = plan.Name, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"], TextWrapping = TextWrapping.Wrap });
+        if (!string.IsNullOrWhiteSpace(plan.Description))
+        {
+            text.Children.Add(new TextBlock { Text = plan.Description, TextWrapping = TextWrapping.Wrap });
+        }
+        var steps = string.Join("  →  ", plan.Steps.Select((st, i) => $"{i + 1}. {CommandCatalog.Find(st.Command)?.Title ?? st.Command}"));
+        text.Children.Add(new TextBlock { Text = steps.Length > 0 ? steps : "No steps yet", Style = caption, Margin = new Thickness(0, 4, 0, 0) });
+        var starts = PlanCheck.StartKinds(plan);
+        text.Children.Add(new TextBlock
+        {
+            Text = string.Join(" · ", new[]
+            {
+                plan.Steps.Count == 0 ? null : $"starts on {(starts.Count == 0 ? "the tenant" : string.Join(" or ", starts.Select(k => NodeKinds.Name(k, 2))))}",
+                plan.Variables.Count > 0 ? $"asks for {string.Join(", ", plan.Variables.Select(v => v.Shown))}" : null,
+                $"made by {plan.CreatedBy ?? "you"} {When(plan.Created)}",
+                plan.Prepared is { } prepared ? $"a run prepared by {prepared.By ?? "you"}" : null,
+                last is null ? "not run yet" : $"last run {When(last.Started)}: {RunSummary(last)}",
+            }.OfType<string>()),
+            Style = caption,
+        });
+        if (PlanCheck.Problems(plan) is { Count: > 0 } problems)
+        {
+            text.Children.Add(new TextBlock
+            {
+                Text = problems.Count == 1 ? problems[0] : $"{problems[0]} (and {problems.Count - 1:N0} more)",
+                Style = caption,
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SystemFillColorCautionBrush"],
+            });
+        }
+        Grid.SetColumn(text, 1);
+        grid.Children.Add(text);
+
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        var open = new Button { Content = "Open", MinWidth = 80 };
+        ToolTipService.SetToolTip(open, "Open it beside its connection's table, on what's ticked (or its prepared run or test selection)");
+        open.Click += (_, _) => _ = OpenPlanAsync(plan.Id);
+        buttons.Children.Add(open);
+        var more = new Button { Style = (Style)Application.Current.Resources["ToolButton"], Content = new FontIcon { Glyph = "\uE712", FontSize = 14 }, Flyout = PlanMenu(plan.Id) };
+        ToolTipService.SetToolTip(more, "Rename, duplicate or delete");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(more, $"More for {plan.Name}");
+        buttons.Children.Add(more);
+        Grid.SetColumn(buttons, 2);
+        grid.Children.Add(buttons);
+
+        var card = new Border
+        {
+            Style = (Style)Application.Current.Resources["Card"],
+            CornerRadius = (CornerRadius)Application.Current.Resources["ControlCornerRadius"],
+            Padding = new Thickness(16, 14, 16, 14),
+            Child = grid,
+            ContextFlyout = PlanMenu(plan.Id),
+        };
+        card.DoubleTapped += (_, _) => _ = OpenPlanAsync(plan.Id);
+        return card;
+    }
+
+    /// <summary>A plan with no steps, for the active connection (or one picked), opened to add its first step.</summary>
+    private async void OnNewPlan(object sender, RoutedEventArgs e)
+    {
+        var connections = workspace.Load().Connections;
+        if (connections.Count == 0)
+        {
+            return;
+        }
+        ComboBox? pick = null;
+        if (connections.Count > 1)
+        {
+            pick = new ComboBox { Header = "Connection", HorizontalAlignment = HorizontalAlignment.Stretch, Margin = new Thickness(0, 12, 0, 0) };
+            foreach (var c in connections)
+            {
+                pick.Items.Add(new ComboBoxItem { Content = c.Name, Tag = c.Id });
+            }
+            pick.SelectedIndex = Math.Max(0, connections.ToList().FindIndex(c => c.Id == active?.Id));
+        }
+        var name = await AskNameAsync("New plan", $"Plan {DateTime.Now:yyyy-MM-dd HH:mm}", "Create", pick);
+        if (name is null)
+        {
+            return;
+        }
+        var connectionId = (pick?.SelectedItem as ComboBoxItem)?.Tag as string ?? active?.Id ?? connections[0].Id;
+        Plan plan;
         try
         {
-            foreach (var old in Nav.MenuItems.OfType<NavigationViewItem>().Where(i => i.Tag is string t && t.StartsWith(PlanTag, StringComparison.Ordinal)).ToList())
-            {
-                Nav.MenuItems.Remove(old);
-            }
-            var connections = workspace.Load().Connections.ToDictionary(c => c.Id, c => c.Name);
-            var first = true;
-            foreach (var plan in planStore.List().Where(p => connections.ContainsKey(p.ConnectionId)))
-            {
-                var item = new NavigationViewItem
-                {
-                    Content = plan.Name,
-                    Tag = PlanTag + plan.Id,
-                    Icon = new FontIcon { Glyph = "" },
-                    Margin = first ? new Thickness(0, 16, 0, 0) : new Thickness(0),
-                    InfoBadge = new InfoBadge { Value = plan.Steps.Count },
-                };
-                ToolTipService.SetToolTip(item, $"Plan: {Plural(plan.Steps.Count, "step", "steps")}{(plan.Prepared is null ? "" : ", a run prepared")}\n" +
-                                                $"{connections[plan.ConnectionId]} · made by {plan.CreatedBy ?? "you"} {When(plan.Created)}");
-                Nav.MenuItems.Add(item);
-                first = false;
-            }
-            if (shownPlan is { } shown && NavItem(PlanTag + shown.Id) is { } picked)
-            {
-                Nav.SelectedItem = picked;
-            }
+            plan = planStore.Save(new Plan { Name = name, ConnectionId = connectionId, CreatedBy = "you" });
         }
-        finally
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            navigating = was;
+            ShowError(ex);
+            return;
         }
+        knownPlans?.TryAdd(plan.Id, null);
+        await OpenPlanAsync(plan.Id);
     }
 
     /// <summary>Follows Plans\ in the data folder: plans an AI app makes or changes show up straight away.</summary>
     private void WatchPlans()
     {
+        knownPlans = planStore.List().ToDictionary(p => p.Id, p => p.Prepared?.At);
         try
         {
             Directory.CreateDirectory(planStore.Folder);
@@ -122,6 +247,7 @@ public sealed partial class MainWindow
 
     private void OnPlansChanged(DispatcherQueueTimer sender, object args)
     {
+        AnnounceNewPlans();
         RefreshPlans();
         if (shownPlan is { } shown)
         {
@@ -148,6 +274,32 @@ public sealed partial class MainWindow
         }
     }
 
+    /// <summary>A plan an AI app has just made, or a run it has just prepared: said in a message, with Open.</summary>
+    private void AnnounceNewPlans()
+    {
+        var plans = planStore.List();
+        if (knownPlans is { } known)
+        {
+            var connections = workspace.Load().Connections.Select(c => c.Id).ToHashSet();
+            foreach (var plan in plans.Where(p => connections.Contains(p.ConnectionId)))
+            {
+                var isNew = !known.TryGetValue(plan.Id, out var preparedAt);
+                var by = isNew ? plan.CreatedBy : plan.Prepared?.By;
+                if (by is null || by == "you" || (!isNew && plan.Prepared?.At == preparedAt))
+                {
+                    continue;
+                }
+                var id = plan.Id;
+                ShowToast(isNew ? $"{by} made a plan" : $"{by} prepared a run",
+                    isNew
+                        ? $"“{plan.Name}”: {Plural(plan.Steps.Count, "step", "steps")}. Open it to look it over and run it."
+                        : $"Of “{plan.Name}”: open it to look the run over and start it.",
+                    ("Open", () => _ = OpenPlanAsync(id)), success: false);
+            }
+        }
+        knownPlans = plans.ToDictionary(p => p.Id, p => p.Prepared?.At);
+    }
+
     // ---- opening one ----
 
     private async Task OpenPlanAsync(string id)
@@ -161,6 +313,11 @@ public sealed partial class MainWindow
         {
             ShowError(new InvalidOperationException($"The plan \"{plan.Name}\" is for a connection that's gone."));
             return;
+        }
+        // from the Plans or Jobs page (or for another connection): its connection, in the left pane
+        if (TenantPage.Visibility != Visibility.Visible || active?.Id != plan.ConnectionId)
+        {
+            SelectNavQuietly(plan.ConnectionId);
         }
         if (active?.Id != plan.ConnectionId || identity is null)
         {
@@ -195,7 +352,6 @@ public sealed partial class MainWindow
             }
         }
         shownPlan = plan;
-        SelectNavQuietly(PlanTag + plan.Id);
         ShowPage(TenantPage);
         ShowPane(true);
         ShowPlan(plan);
@@ -225,7 +381,6 @@ public sealed partial class MainWindow
         planTableText = planRows.Count > 0 ? PlanValues.TableText(planRows, plan.Variables.Select(v => v.Name)) : "";
         planTableProblems = [];
         shownPlan = plan;
-        SelectNavQuietly(PlanTag + plan.Id);
     }
 
     private async Task TickTestSelectionAsync(Plan plan)
@@ -247,12 +402,12 @@ public sealed partial class MainWindow
             });
         }
         shownPlan = plan;
-        SelectNavQuietly(PlanTag + plan.Id);
     }
 
     /// <summary>The plan in the pane: its steps, what it runs on, and the values it asks for.</summary>
     private void ShowPlan(Plan plan)
     {
+        editingStep = null;
         OverviewView.Visibility = Visibility.Collapsed;
         FormView.Visibility = Visibility.Collapsed;
         ResultsView.Visibility = Visibility.Collapsed;
@@ -277,6 +432,7 @@ public sealed partial class MainWindow
         {
             PlanSteps.Children.Add(StepCard(plan, i, runs.Where(r => r.Step == i + 1).MaxBy(r => r.Started)));
         }
+        PlanSteps.Children.Add(AddStepButton(plan));
         RefreshPlanCheck();
     }
 
@@ -298,10 +454,9 @@ public sealed partial class MainWindow
             Link($"Use the run {prepared.By ?? "you"} prepared: {what}{(prepared.Rows.Count > 0 ? $", values for {prepared.Rows.Count:N0}" : "")}",
                 async () => { await UsePreparedAsync(plan, prepared); ShowPlan(plan); });
         }
-        if (plan.HasTestSelection)
+        if (RunOnButton(plan) is { } runOn)
         {
-            Link($"Tick its test selection ({(plan.Preset is { } p ? (SitePresets.Find(p)?.Title ?? ContentPresets.Find(p)?.Title ?? p).ToLowerInvariant() : Summary(plan.Items))})",
-                async () => { await TickTestSelectionAsync(plan); ShowPlan(plan); });
+            PlanSelectionActions.Children.Add(runOn);
         }
         if (selection.Count > 0)
         {
@@ -328,6 +483,82 @@ public sealed partial class MainWindow
                 }, "Kept: it's offered when the plan opens with nothing ticked."));
             }
         }
+    }
+
+    /// <summary>
+    /// "Run it on…": ticks something for the plan without leaving it: its test
+    /// selection, a saved selection of its connection, or a predefined one, of
+    /// what the plan starts on.
+    /// </summary>
+    private DropDownButton? RunOnButton(Plan plan)
+    {
+        var starts = PlanCheck.StartKinds(plan);
+        var menu = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedLeft };
+        void Item(IList<MenuFlyoutItemBase> into, string text, string glyph, Func<Task> tick)
+        {
+            var item = new MenuFlyoutItem { Text = text, Icon = new FontIcon { Glyph = glyph } };
+            item.Click += async (_, _) =>
+            {
+                await tick();
+                // the plan stays on show, on what's ticked now
+                shownPlan = plan;
+                ShowPane(true);
+                ShowPlan(plan);
+            };
+            into.Add(item);
+        }
+        static string PresetTitle(string id) => SitePresets.Find(id)?.Title ?? ContentPresets.Find(id)?.Title ?? id;
+
+        if (plan.HasTestSelection)
+        {
+            Item(menu.Items, $"Its test selection: {(plan.Preset is { } p ? PresetTitle(p) : Summary(plan.Items))}", "", () => TickTestSelectionAsync(plan));
+        }
+        var saved = active is null ? [] : savedStore.List()
+            .Where(s => s.ConnectionId == active.Id && s.Items.Any(n => starts.Contains(n.Kind)))
+            .ToList();
+        if (saved.Count > 0)
+        {
+            var sub = new MenuFlyoutSubItem { Text = "A saved selection", Icon = new FontIcon { Glyph = "" } };
+            foreach (var s in saved)
+            {
+                Item(sub.Items, s.Preset is null ? $"{s.Name} ({Summary(s.Items)})" : $"{s.Name} (picked again)", s.Preset is null ? "\uE728" : "\uE895", () =>
+                {
+                    if (s.Preset is { } rule)
+                    {
+                        return ShowPresetAsync(rule, refresh: false, s);
+                    }
+                    ShowSaved(s);
+                    return Task.CompletedTask;
+                });
+            }
+            menu.Items.Add(sub);
+        }
+        var sites = starts.Contains(NodeKind.SiteCollection) ? SitePresets.All.ToList() : [];
+        var content = starts.Contains(NodeKind.File) || starts.Contains(NodeKind.Item) ? ContentPresets.All.ToList() : [];
+        if (sites.Count + content.Count > 0)
+        {
+            var sub = new MenuFlyoutSubItem { Text = "A predefined selection", Icon = new FontIcon { Glyph = "" } };
+            foreach (var preset in sites)
+            {
+                Item(sub.Items, preset.OneDrive ? $"OneDrives: {preset.Title}" : preset.Title, preset.Glyph, () => ShowPresetAsync(preset.Id, refresh: false));
+            }
+            if (sites.Count > 0 && content.Count > 0)
+            {
+                sub.Items.Add(new MenuFlyoutSeparator());
+            }
+            foreach (var preset in content)
+            {
+                Item(sub.Items, preset.Title, preset.Glyph, () => ShowPresetAsync(preset.Id, refresh: false));
+            }
+            menu.Items.Add(sub);
+        }
+        if (menu.Items.Count == 0)
+        {
+            return null;
+        }
+        var button = new DropDownButton { Content = "Run it on…", Flyout = menu, Margin = new Thickness(0, 4, 0, 4) };
+        ToolTipService.SetToolTip(button, "Tick a selection for it, and stay in the plan");
+        return button;
     }
 
     /// <summary>A field per variable (a value for all), and a table for a value per item.</summary>
@@ -407,7 +638,6 @@ public sealed partial class MainWindow
             var sites = planRows.Select(r => SpNode.SiteFromUrl(r.Url)).DistinctBy(n => n.Key).ToList();
             ShowSaved(new SavedSelection { Name = $"{plan.Name}: the table's sites", ConnectionId = plan.ConnectionId, Saved = DateTimeOffset.Now, Items = sites, Sites = sites });
             shownPlan = plan;
-            SelectNavQuietly(PlanTag + plan.Id);
             ShowPlan(plan);
         };
         var content = new StackPanel { Spacing = 8 };
@@ -454,7 +684,12 @@ public sealed partial class MainWindow
         var problems = new List<string>(planTableProblems);
         var starts = PlanCheck.StartKinds(plan);
         var firstOnTenant = plan.Steps.Count > 0 && CommandCatalog.Find(plan.Steps[0].Command)?.AppliesTo(NodeKind.Tenant) == true;
-        if (items.Count == 0 && !firstOnTenant)
+        if (plan.Steps.Count == 0)
+        {
+            PlanRunsOn.Text = "Add its first step: that decides what it runs on.";
+            problems.Add("Add a step.");
+        }
+        else if (items.Count == 0 && !firstOnTenant)
         {
             PlanRunsOn.Text = $"Nothing ticked: tick the {string.Join(" or ", starts.Select(k => NodeKinds.Name(k, 2)))} to run it on" +
                               (plan.Prepared is not null || plan.HasTestSelection ? ", or use one of these:" : ".");
@@ -554,11 +789,31 @@ public sealed partial class MainWindow
         }
         Grid.SetColumn(text, 1);
         grid.Children.Add(text);
-        var remove = new Button { Style = (Style)Application.Current.Resources["ToolButton"], Width = 28, Height = 28, Content = new FontIcon { Glyph = "", FontSize = 10 } };
-        ToolTipService.SetToolTip(remove, "Take this step out of the plan");
-        remove.Click += (_, _) => SavePlan(plan with { Steps = plan.Steps.Where((_, j) => j != i).ToList() }, null);
-        Grid.SetColumn(remove, 2);
-        grid.Children.Add(remove);
+        var tools = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Top };
+        var change = new Button { Style = (Style)Application.Current.Resources["ToolButton"], Width = 28, Height = 28, Content = new FontIcon { Glyph = "", FontSize = 12 } };
+        ToolTipService.SetToolTip(change, "Change its inputs");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(change, $"Change step {i + 1}");
+        change.IsEnabled = command is not null;
+        change.Click += (_, _) => EditStep(plan, i);
+        tools.Children.Add(change);
+        var more = new Button { Style = (Style)Application.Current.Resources["ToolButton"], Width = 28, Height = 28, Content = new FontIcon { Glyph = "", FontSize = 12 } };
+        ToolTipService.SetToolTip(more, "Move or remove");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(more, $"Move or remove step {i + 1}");
+        var menu = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedRight };
+        void Item(string text, string glyph, bool enabled, Action act)
+        {
+            var item = new MenuFlyoutItem { Text = text, Icon = new FontIcon { Glyph = glyph }, IsEnabled = enabled };
+            item.Click += (_, _) => act();
+            menu.Items.Add(item);
+        }
+        Item("Move up", "", i > 0, () => SavePlan(plan with { Steps = Swap(plan.Steps, i, i - 1) }, null));
+        Item("Move down", "", i < plan.Steps.Count - 1, () => SavePlan(plan with { Steps = Swap(plan.Steps, i, i + 1) }, null));
+        menu.Items.Add(new MenuFlyoutSeparator());
+        Item("Remove the step", "", true, () => SavePlan(plan with { Steps = plan.Steps.Where((_, j) => j != i).ToList() }, $"Step {i + 1} removed."));
+        more.Flyout = menu;
+        tools.Children.Add(more);
+        Grid.SetColumn(tools, 2);
+        grid.Children.Add(tools);
         return new Border
         {
             Style = (Style)Application.Current.Resources["Card"],
@@ -596,21 +851,29 @@ public sealed partial class MainWindow
 
     private async void OnDeletePlan(object sender, RoutedEventArgs e)
     {
-        if (shownPlan is not { } plan)
+        if (shownPlan is { } plan)
         {
-            return;
+            await DeletePlanAsync(plan.Id);
         }
-        if (!await ConfirmAsync($"Delete “{plan.Name}”?", "The plan goes from the list. Nothing in SharePoint changes, and its runs stay in the history.", "Delete", danger: false))
+    }
+
+    private async Task DeletePlanAsync(string id)
+    {
+        if (planStore.Load(id) is not { } plan ||
+            !await ConfirmAsync($"Delete “{plan.Name}”?", "The plan goes from the list. Nothing in SharePoint changes, and its runs stay in the history.", "Delete", danger: false))
         {
             return;
         }
         planStore.Delete(plan.Id);
-        shownPlan = null;
         RefreshPlans();
-        ShowOverview();
-        if (active is not null)
+        if (shownPlan?.Id == id)
         {
-            SelectNavQuietly(active.Id);
+            shownPlan = null;
+            ShowOverview();
+            if (active is not null)
+            {
+                SelectNavQuietly(active.Id);
+            }
         }
     }
 
@@ -648,9 +911,192 @@ public sealed partial class MainWindow
         }
     }
 
+    // ---- changing a plan in the app ----
+
+    /// <summary>A plan's menu in the navigation pane.</summary>
+    private MenuFlyout PlanMenu(string id)
+    {
+        var menu = new MenuFlyout();
+        void Item(string text, string glyph, Func<Task> act)
+        {
+            var item = new MenuFlyoutItem { Text = text, Icon = new FontIcon { Glyph = glyph } };
+            item.Click += async (_, _) => await act();
+            menu.Items.Add(item);
+        }
+        Item("Rename…", "", () => RenamePlanAsync(id));
+        Item("Duplicate", "", () =>
+        {
+            DuplicatePlan(id);
+            return Task.CompletedTask;
+        });
+        menu.Items.Add(new MenuFlyoutSeparator());
+        Item("Delete", "", () => DeletePlanAsync(id));
+        return menu;
+    }
+
+    private async Task RenamePlanAsync(string id)
+    {
+        if (planStore.Load(id) is not { } plan || await AskNameAsync("Rename the plan", plan.Name, "Rename") is not { } name || name == plan.Name)
+        {
+            return;
+        }
+        try
+        {
+            var saved = planStore.Save(plan with { Name = name });
+            if (shownPlan?.Id == id)
+            {
+                shownPlan = saved;
+                if (PlanView.Visibility == Visibility.Visible)
+                {
+                    ShowPlan(saved);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            ShowError(ex);
+        }
+        RefreshPlans();
+    }
+
+    /// <summary>A copy of a plan, to change without touching the one it's from (a prepared run stays with the original).</summary>
+    private void DuplicatePlan(string id)
+    {
+        if (planStore.Load(id) is not { } plan)
+        {
+            return;
+        }
+        try
+        {
+            var copy = planStore.Save(plan with { File = "", Name = $"{plan.Name} (copy)", CreatedBy = "you", Created = default, Prepared = null });
+            RefreshPlans();
+            ShowToast($"Made “{copy.Name}”", "A copy to change: the original stays as it is.", ("Open", () => _ = OpenPlanAsync(copy.Id)));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            ShowError(ex);
+        }
+    }
+
+    private static List<PlanStep> Swap(IReadOnlyList<PlanStep> steps, int a, int b)
+    {
+        var list = steps.ToList();
+        (list[a], list[b]) = (list[b], list[a]);
+        return list;
+    }
+
+    /// <summary>What's ticked when a plan reaches a step: what it starts on, then what each finder before it ticks.</summary>
+    private static IReadOnlySet<NodeKind> KindsBefore(Plan plan, int index)
+    {
+        var kinds = PlanCheck.StartKinds(plan);
+        for (var i = 0; i < index && i < plan.Steps.Count; i++)
+        {
+            if (CommandCatalog.Find(plan.Steps[i].Command) is { } c)
+            {
+                kinds = PlanCheck.KindsAfter(c, PlanCheck.ArgsOf(c, plan.Steps[i]), kinds);
+            }
+        }
+        return kinds;
+    }
+
+    /// <summary>The kind a command runs on at a step (any but the tenant, when it can).</summary>
+    private static NodeKind StepKind(Command c, IReadOnlySet<NodeKind> kinds)
+    {
+        var on = PlanCheck.RunsOn(c, kinds);
+        return on.Count == 0 ? c.Targets[0] : on.FirstOrDefault(k => k != NodeKind.Tenant, on[0]);
+    }
+
+    /// <summary>A step's inputs in the form, to change and save (not run).</summary>
+    private void EditStep(Plan plan, int index)
+    {
+        var step = plan.Steps[index];
+        if (CommandCatalog.Find(step.Command) is not { } c)
+        {
+            return;
+        }
+        // the first step decides what the plan starts on: it can be on any of its command's kinds
+        var kinds = index == 0 && plan.StartsOn.Count == 0 ? c.Targets.ToHashSet() : KindsBefore(plan, index);
+        editingStep = (plan, index, StepKind(c, kinds));
+        OpenForm(c, PlanCheck.ArgsOf(c, step));
+    }
+
+    /// <summary>"Add a step": the commands that can run where the plan has got to, by group.</summary>
+    private FrameworkElement AddStepButton(Plan plan)
+    {
+        IReadOnlySet<NodeKind> kinds = plan.Steps.Count == 0 && plan.StartsOn.Count == 0
+            ? Enum.GetValues<NodeKind>().ToHashSet()
+            : KindsBefore(plan, plan.Steps.Count);
+        var menu = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Bottom };
+        foreach (var group in CommandCatalog.All.Where(c => PlanCheck.RunsOn(c, kinds).Count > 0).GroupBy(c => c.Group))
+        {
+            var sub = new MenuFlyoutSubItem { Text = group.Key };
+            foreach (var c in group)
+            {
+                var item = new MenuFlyoutItem { Text = c.Title, Icon = new FontIcon { Glyph = c.Glyph } };
+                ToolTipService.SetToolTip(item, c.Description);
+                item.Click += (_, _) =>
+                {
+                    editingStep = (plan, plan.Steps.Count, StepKind(c, kinds));
+                    OpenForm(c);
+                };
+                sub.Items.Add(item);
+            }
+            menu.Items.Add(sub);
+        }
+        var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        content.Children.Add(new FontIcon { Glyph = "", FontSize = 14 });
+        content.Children.Add(new TextBlock { Text = "Add a step" });
+        var button = new DropDownButton { Content = content, Flyout = menu, Margin = new Thickness(0, 4, 0, 0) };
+        ToolTipService.SetToolTip(button, kinds.Count == 0
+            ? "Commands for the tenant"
+            : $"Commands for what's ticked by then: {string.Join(", ", kinds.Select(k => NodeKinds.Name(k, 2)))}");
+        return button;
+    }
+
+    /// <summary>Saves the form as the step being edited (or a new one), with any {variables} it brings.</summary>
+    private void SaveStep(Command c)
+    {
+        if (editingStep is not { } edit)
+        {
+            return;
+        }
+        var args = FormArgs();
+        var problems = c.Check(PlanValues.WithSamples(c, args), [edit.Kind]);
+        FormProblems.Text = string.Join("\n", problems);
+        FormProblems.Visibility = problems.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (problems.Count > 0)
+        {
+            return;
+        }
+        var step = new PlanStep { Command = c.Id, Args = args.ToDictionary().Where(a => a.Value is not null).ToDictionary(a => a.Key, a => a.Value) };
+        var plan = planStore.Load(edit.Plan.Id) ?? edit.Plan;
+        var steps = plan.Steps.ToList();
+        var adding = edit.Index >= steps.Count;
+        if (adding)
+        {
+            steps.Add(step);
+        }
+        else
+        {
+            steps[edit.Index] = step;
+        }
+        var (updated, added) = WithVariablesOf(plan with { Steps = steps }, step);
+        editingStep = null;
+        SavePlan(updated, $"{(adding ? "Added" : "Changed")} step {edit.Index + 1}: {c.Title}" +
+                          (added.Count > 0 ? $", with the variables {string.Join(", ", added.Select(n => $"{{{n}}}"))}." : "."));
+    }
+
+    /// <summary>The {variables} a step uses that the plan doesn't have yet, added as text ones.</summary>
+    private static (Plan Plan, List<string> Added) WithVariablesOf(Plan plan, PlanStep step)
+    {
+        var known = PlanValues.BuiltIn.Concat(plan.Variables.Select(v => v.Name)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var added = step.Args.Values.SelectMany(PlanValues.Used).Where(n => !known.Contains(n)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        return added.Count == 0 ? (plan, added) : (plan with { Variables = [.. plan.Variables, .. added.Select(n => new PlanVariable { Name = n })] }, added);
+    }
+
     // ---- in the pane's command list ----
 
-    /// <summary>The plans that can start on the picked kind, after the commands.</summary>
+    /// <summary>The plans that can start on the picked kind, before the commands.</summary>
     private void AddPlansToCommandList(string filter)
     {
         if (active is null)
@@ -688,6 +1134,9 @@ public sealed partial class MainWindow
             button.Click += (_, _) => _ = ShowPlanSelectionAsync(plan);
             CommandList.Children.Add(button);
         }
+        var all = new HyperlinkButton { Content = "All plans…", Margin = new Thickness(12, 0, 0, 4), Padding = new Thickness(0, 2, 0, 2) };
+        all.Click += (_, _) => Nav.SelectedItem = PlansItem;
+        CommandList.Children.Add(all);
     }
 
     // ---- adding a step from a command's form ----
@@ -756,13 +1205,7 @@ public sealed partial class MainWindow
         {
             return;
         }
-        // {variables} typed in the form that the plan doesn't have yet: added as text ones
-        var known = PlanValues.BuiltIn.Concat(plan.Variables.Select(v => v.Name)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var added = step.Args.Values.SelectMany(PlanValues.Used).Where(n => !known.Contains(n)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        if (added.Count > 0)
-        {
-            plan = plan with { Variables = [.. plan.Variables, .. added.Select(n => new PlanVariable { Name = n })] };
-        }
+        (plan, var added) = WithVariablesOf(plan, step);
         try
         {
             plan = planStore.Save(plan);

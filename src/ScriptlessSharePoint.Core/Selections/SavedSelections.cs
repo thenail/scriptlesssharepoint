@@ -26,6 +26,12 @@ public sealed record SavedSelection
 
     /// <summary>The subsite, list or folder each item was ticked in, shown above it.</summary>
     public IReadOnlyList<SpNode> Parents { get; init; } = [];
+
+    /// <summary>
+    /// A rule rather than a list: the predefined selection (its ID) picked
+    /// again each time it's opened. The items are what it picked when saved.
+    /// </summary>
+    public string? Preset { get; init; }
 }
 
 /// <summary>
@@ -74,12 +80,13 @@ public sealed class SavedSelectionStore(string? folder = null)
     }
 
     /// <summary>A new saved selection, in a file of its own.</summary>
-    public SavedSelection Save(string name, string connectionId, IEnumerable<SpNode> items, IEnumerable<SpNode> sites, IEnumerable<SpNode>? parents = null)
+    public SavedSelection Save(string name, string connectionId, IEnumerable<SpNode> items, IEnumerable<SpNode> sites, IEnumerable<SpNode>? parents = null, string? preset = null)
     {
         var saved = new SavedSelection
         {
             Name = name.Trim(),
             ConnectionId = connectionId,
+            Preset = preset,
             Saved = DateTimeOffset.Now,
             Items = items.DistinctBy(n => n.Key).ToList(),
             Sites = sites.DistinctBy(n => n.Key).ToList(),

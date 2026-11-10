@@ -20,6 +20,7 @@ public sealed partial class MainWindow
 {
     /// <summary>The navigation item's tag: this, then the saved selection's file.</summary>
     private const string SavedTag = "saved:";
+    private const string SavedHeaderTag = "header:saved";
 
     private readonly SavedSelectionStore savedStore = new();
 
@@ -49,11 +50,12 @@ public sealed partial class MainWindow
         var picked = (Nav.SelectedItem as NavigationViewItem)?.Tag as string;
         try
         {
-            foreach (var old in Nav.MenuItems.OfType<NavigationViewItem>().Where(i => i.Tag is string t && t.StartsWith(SavedTag, StringComparison.Ordinal)).ToList())
+            foreach (var old in Nav.MenuItems.OfType<NavigationViewItemBase>().Where(i => i.Tag is string t && (t.StartsWith(SavedTag, StringComparison.Ordinal) || t == SavedHeaderTag)).ToList())
             {
                 Nav.MenuItems.Remove(old);
             }
             var connections = workspace.Load().Connections.ToDictionary(c => c.Id);
+            var at = Nav.MenuItems.Count;
             var first = true;
             foreach (var s in savedStore.List())
             {
@@ -61,17 +63,19 @@ public sealed partial class MainWindow
                 {
                     continue;
                 }
+                if (first)
+                {
+                    Nav.MenuItems.Insert(at++, NavHeader("Saved selections", SavedHeaderTag));
+                }
                 var item = new NavigationViewItem
                 {
                     Content = s.Name,
                     Tag = SavedTag + s.File,
-                    Icon = new FontIcon { Glyph = "" },
-                    // the gap between the connections and these
-                    Margin = first ? new Thickness(0, 16, 0, 0) : new Thickness(0),
+                    Icon = new FontIcon { Glyph = s.Preset is null ? "" : "\uE895" },
                     ContextFlyout = SavedMenu(s.File),
-                    AllowDrop = true,
-                    // how many items it has
-                    InfoBadge = new InfoBadge { Value = s.Items.Count },
+                    AllowDrop = s.Preset is null,
+                    // how many items it has (a rule's change each time)
+                    InfoBadge = s.Preset is null ? new InfoBadge { Value = s.Items.Count } : null,
                 };
                 var file = s.File;
                 item.DragOver += (_, e) => MarkDropTarget(item, OnSavedDragOver(file, e));
@@ -81,8 +85,10 @@ public sealed partial class MainWindow
                     MarkDropTarget(item, false);
                     OnSavedDrop(file);
                 };
-                ToolTipService.SetToolTip(item, $"{Summary(s.Items)}\n{connection.Name} · saved {s.Saved.LocalDateTime:g}");
-                Nav.MenuItems.Add(item);
+                ToolTipService.SetToolTip(item, s.Preset is { } rule
+                    ? $"A rule: {PresetName(rule)}, picked again each time it's opened\n{connection.Name} · saved {s.Saved.LocalDateTime:g}"
+                    : $"{Summary(s.Items)}\n{connection.Name} · saved {s.Saved.LocalDateTime:g}");
+                Nav.MenuItems.Insert(at++, item);
                 first = false;
             }
             if (picked?.StartsWith(SavedTag, StringComparison.Ordinal) == true)
@@ -205,17 +211,29 @@ public sealed partial class MainWindow
         {
             return;
         }
-        var name = await AskNameAsync("Save the selection", $"Selection {DateTime.Now:yyyy-MM-dd HH:mm}", "Save");
+        // what a predefined selection picked, unchanged: it can be kept as the rule, picked again each time
+        var rule = shownPreset is { } preset && ShownUnchanged() ? preset : null;
+        var keepRule = rule is null ? null : new CheckBox
+        {
+            Content = $"Keep the rule, not the list: pick them again each time it's opened",
+            Margin = new Thickness(0, 12, 0, 0),
+        };
+        if (keepRule is not null)
+        {
+            ToolTipService.SetToolTip(keepRule, $"Otherwise it keeps these {Summary(selection.Values)} as they are now, whatever {PresetName(rule!)} picks later");
+        }
+        var name = await AskNameAsync("Save the selection", rule is null ? $"Selection {DateTime.Now:yyyy-MM-dd HH:mm}" : PresetName(rule), "Save", keepRule);
         if (name is null || selection.Count == 0 || active is null)
         {
             return;
         }
+        var asRule = keepRule?.IsChecked == true ? rule : null;
         var items = selection.Values.ToList();
         var sites = items.Select(n => siteOf.TryGetValue(n.Key, out var site) ? site : SpNode.SiteFromUrl(n.SiteUrl ?? n.Url));
         SavedSelection saved;
         try
         {
-            saved = savedStore.Save(name, active.Id, items, sites, items.Select(n => parentOf.GetValueOrDefault(n.Key)).OfType<SpNode>());
+            saved = savedStore.Save(name, active.Id, items, sites, items.Select(n => parentOf.GetValueOrDefault(n.Key)).OfType<SpNode>(), asRule);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -223,13 +241,23 @@ public sealed partial class MainWindow
             return;
         }
         RefreshSavedSelections();
+        // kept as a rule: the predefined selection on show is it now (F5 picks again; Save makes a list)
+        if (asRule is not null)
+        {
+            shownRule = saved;
+            SelectNavQuietly(SavedTag + saved.File);
+            SetCrumbs(saved.Name);
+            ShowToast($"Saved “{saved.Name}”", $"A rule: {PresetName(asRule)}, picked again each time it's opened · in the list on the left");
+            return;
+        }
         // saved from another saved selection (or a predefined one): the new one is the one on show now, and Save goes to it
         if (shownSaved is not null)
         {
             shownSaved = saved;
             shownPreset = null;
             SelectNavQuietly(SavedTag + saved.File);
-            StatusTitle.Text = $"Saved selection: {saved.Name}";
+            SetCrumbs(saved.Name);
+            StatusTitle.Text = "Saved selection";
         }
         UpdateSaveButton();
         ShowToast($"Saved “{saved.Name}”", $"{Plural(saved.Items.Count, "item", "items")} · in the list on the left",
@@ -252,7 +280,12 @@ public sealed partial class MainWindow
         if (shownSaved?.File == file)
         {
             shownSaved = shownSaved with { Name = name };
-            StatusTitle.Text = $"Saved selection: {name}";
+            SetCrumbs(name);
+        }
+        else if (shownRule?.File == file && shownPreset is not null)
+        {
+            shownRule = shownRule with { Name = name };
+            SetCrumbs(name);
         }
         RefreshSavedSelections();
     }
@@ -274,15 +307,21 @@ public sealed partial class MainWindow
     }
 
     /// <summary>A name, or null when cancelled. Save stays off while the name is empty.</summary>
-    private async Task<string?> AskNameAsync(string title, string name, string action)
+    private async Task<string?> AskNameAsync(string title, string name, string action, FrameworkElement? more = null)
     {
         var box = new TextBox { Header = "Name", Text = name, MinWidth = 320 };
+        var content = new StackPanel();
+        content.Children.Add(box);
+        if (more is not null)
+        {
+            content.Children.Add(more);
+        }
         var dialog = new ContentDialog
         {
             XamlRoot = Root.XamlRoot,
             Style = (Style)Application.Current.Resources["DefaultContentDialogStyle"],
             Title = title,
-            Content = box,
+            Content = content,
             PrimaryButtonText = action,
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary,
@@ -318,7 +357,18 @@ public sealed partial class MainWindow
             await ShowConnectionAsync(s.ConnectionId, force: active?.Id == s.ConnectionId);
             return;
         }
+        await ShowSavedOrRuleAsync(s);
+    }
+
+    /// <summary>A saved selection: its items, or, for a rule, what the rule picks now.</summary>
+    private Task ShowSavedOrRuleAsync(SavedSelection s)
+    {
+        if (s.Preset is { } rule)
+        {
+            return ShowPresetAsync(rule, refresh: false, s);
+        }
         ShowSaved(s);
+        return Task.CompletedTask;
     }
 
     /// <summary>After signing in: the saved selection waiting for it, or every site collection.</summary>
@@ -344,8 +394,7 @@ public sealed partial class MainWindow
         if (pendingSaved is { } s && s.ConnectionId == active?.Id)
         {
             pendingSaved = null;
-            ShowSaved(s);
-            return Task.CompletedTask;
+            return ShowSavedOrRuleAsync(s);
         }
         pendingSaved = null;
         return LoadSitesAsync();
@@ -359,6 +408,11 @@ public sealed partial class MainWindow
     /// </summary>
     private void ShowSaved(SavedSelection s)
     {
+        // (ticking again just what's ticked replaces nothing)
+        if (s.Items.Count != selection.Count || !s.Items.All(n => selection.ContainsKey(n.Key)))
+        {
+            KeepTicksBefore($"Ticked {(s.Items.Count == 0 ? "nothing" : Summary(s.Items))}: {s.Name}", always: false);
+        }
         ++view;
         shownSaved = s;
         shownPreset = null;
@@ -391,10 +445,18 @@ public sealed partial class MainWindow
             pickedKind = selection.Values.GroupBy(n => n.Kind).OrderByDescending(g => g.Count()).ThenBy(g => g.Key).First().Key;
         }
         ShowPane(true);
-        ShowOverview();
+        // a plan (or its step) on show stays: what's ticked changed, not what to do with it
+        if (shownPlan is { } plan && PlanView.Visibility == Visibility.Visible)
+        {
+            ShowPlan(plan);
+        }
+        else if (editingStep is null)
+        {
+            ShowOverview();
+        }
         UpdatePane();
-        ShowAllButton.Visibility = Visibility.Visible;
-        SetStatus(s.File.Length == 0 ? s.Name : $"Saved selection: {s.Name}", $"{Summary(s.Items)}, from {Plural(roots.Count, "site collection", "site collections")}.");
+        SetCrumbs(s.Name);
+        SetStatus(s.File.Length == 0 ? "" : "Saved selection", $"{Summary(s.Items)}, from {Plural(roots.Count, "site collection", "site collections")}.");
         if (first is not null)
         {
             Table.ScrollIntoView(first);
@@ -466,6 +528,12 @@ public sealed partial class MainWindow
         {
             e.AcceptedOperation = DataPackageOperation.None;
             e.DragUIOverride.Caption = "Only for a selection of the same connection";
+            return false;
+        }
+        if (s.Preset is not null)
+        {
+            e.AcceptedOperation = DataPackageOperation.None;
+            e.DragUIOverride.Caption = $"“{s.Name}” is a rule: what it picks is worked out each time";
             return false;
         }
         var have = s.Items.Select(n => n.Key).ToHashSet();
@@ -593,13 +661,5 @@ public sealed partial class MainWindow
     {
         Toast.IsOpen = false;
         toastAction?.Invoke();
-    }
-
-    private void OnShowAll(object sender, RoutedEventArgs e)
-    {
-        if (identity is not null)
-        {
-            _ = LoadSitesAsync();
-        }
     }
 }

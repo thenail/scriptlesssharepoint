@@ -45,6 +45,17 @@ public sealed class SavedSelectionTests : IDisposable
     };
 
     [Fact]
+    public void Keeps_a_rule_with_what_it_picked_then()
+    {
+        var saved = store.Save("Stale sites", "conn1", [SiteNode], [SiteNode], preset: "inactive-90");
+        var listed = Assert.Single(store.List());
+        Assert.Equal("inactive-90", listed.Preset);
+        Assert.Equal(SiteNode, Assert.Single(listed.Items));
+        Assert.Null(store.Save("A list", "conn1", [SiteNode], [SiteNode]).Preset);
+        Assert.Equal("inactive-90", store.Rename(saved.File, "Renamed")!.Preset);
+    }
+
+    [Fact]
     public void Saves_lists_renames_and_removes()
     {
         var saved = store.Save(" Leave policy ", "conn1", [File, File, Library], [SiteNode]);

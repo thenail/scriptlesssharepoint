@@ -66,6 +66,11 @@
             </NavigationView.PaneHeader>
 
             <NavigationView.FooterMenuItems>
+                <NavigationViewItem x:Name="PlansItem" Content="Plans" Tag="plans">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE9D5;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem x:Name="HistoryItem" Content="Jobs" Tag="history">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE81C;" />
@@ -101,18 +106,45 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <!-- The page title, and the tools for the table -->
-                    <Grid Margin="0,0,0,20">
+                    <!--
+                        Where you are: the connection, then the selection on show
+                        (picking the connection goes back to every site collection);
+                        under it the tenant, how it's signed in, and what the table
+                        shows. The tools for the table on the right.
+                    -->
+                    <Grid Margin="0,0,0,16" ColumnSpacing="16">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <TextBlock x:Name="PageTitle" Style="{StaticResource PageTitle}" VerticalAlignment="Center" Margin="0,0,16,0" />
-                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                        <StackPanel Spacing="4">
+                            <BreadcrumbBar x:Name="Crumbs" ItemClicked="OnCrumbClicked" Margin="0,0,0,2">
+                                <BreadcrumbBar.Resources>
+                                    <x:Double x:Key="BreadcrumbBarItemThemeFontSize">28</x:Double>
+                                    <x:Double x:Key="BreadcrumbBarChevronFontSize">16</x:Double>
+                                    <FontWeight x:Key="BreadcrumbBarItemFontWeight">SemiBold</FontWeight>
+                                    <Thickness x:Key="BreadcrumbBarChevronPadding">10,8,10,0</Thickness>
+                                </BreadcrumbBar.Resources>
+                            </BreadcrumbBar>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <HyperlinkButton x:Name="TenantLink" Padding="0" FontSize="12" Click="OnTenantLink" ToolTipService.ToolTip="Open the tenant in the browser" />
+                                <TextBlock Text="·" Style="{StaticResource CaptionSecondary}" VerticalAlignment="Center" />
+                                <TextBlock x:Name="TenantDetail" Style="{StaticResource CaptionSecondary}" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="StatusTitle" Style="{StaticResource BodyStrongTextBlockStyle}" TextWrapping="NoWrap" />
+                                <TextBlock x:Name="StatusText" Grid.Column="1" Style="{StaticResource SecondaryText}" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis" />
+                            </Grid>
+                            <ProgressBar x:Name="BusyBar" IsIndeterminate="True" Visibility="Collapsed" MaxWidth="320" HorizontalAlignment="Left" Width="320" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Top" Margin="0,6,0,0">
                             <Button x:Name="CollapseButton" Style="{StaticResource ToolButton}" Click="OnCollapseAll" ToolTipService.ToolTip="Close every open row" AutomationProperties.Name="Close every open row">
                                 <FontIcon Glyph="&#xE70E;" FontSize="16" />
                             </Button>
@@ -129,46 +161,14 @@
                         </StackPanel>
                     </Grid>
 
-                    <!-- The tenant, as Settings shows an account: its picture, its name, and how it's signed in -->
-                    <Grid Grid.Row="1" ColumnSpacing="24" Margin="0,0,0,16">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <Border Width="88" Height="88" CornerRadius="8" Style="{StaticResource Card}">
-                            <Image Source="ms-appx:///Assets/logo.png" Width="56" Height="56" />
-                        </Border>
-                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
-                            <TextBlock x:Name="TenantTitle" Style="{StaticResource SubtitleTextBlockStyle}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
-                            <HyperlinkButton x:Name="TenantLink" Padding="0" Click="OnTenantLink" />
-                            <TextBlock x:Name="TenantDetail" Style="{StaticResource CaptionSecondary}" />
-                        </StackPanel>
-                        <StackPanel Grid.Column="2" Width="320" VerticalAlignment="Center" Spacing="6">
-                            <Grid ColumnSpacing="12">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock x:Name="StatusTitle" Style="{StaticResource BodyStrongTextBlockStyle}" VerticalAlignment="Center"
-                                           TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
-                                <Button x:Name="SignInButton" Grid.Column="1" MinWidth="96" Content="Sign in" Style="{StaticResource AccentButtonStyle}"
-                                        Click="OnSignIn" Visibility="Collapsed" />
-                            </Grid>
-                            <ProgressBar x:Name="BusyBar" IsIndeterminate="True" Visibility="Collapsed" />
-                            <TextBlock x:Name="StatusText" Style="{StaticResource CaptionSecondary}" />
-                            <HyperlinkButton x:Name="ShowAllButton" Content="Show every site collection" Padding="0" Click="OnShowAll" Visibility="Collapsed" />
-                        </StackPanel>
-                    </Grid>
-
-                    <InfoBar x:Name="ErrorBar" Grid.Row="2" Severity="Error" IsOpen="False" Margin="0,0,0,12">
+                    <InfoBar x:Name="ErrorBar" Grid.Row="1" Severity="Error" IsOpen="False" Margin="0,0,0,12">
                         <InfoBar.ActionButton>
                             <Button x:Name="ErrorSignIn" Content="Sign in" Click="OnSignIn" Visibility="Collapsed" />
                         </InfoBar.ActionButton>
                     </InfoBar>
 
                     <!-- The table and, beside it, what to do with what's ticked -->
-                    <Grid Grid.Row="3" ColumnSpacing="16">
+                    <Grid Grid.Row="2" ColumnSpacing="16">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition x:Name="PaneColumn" Width="380" />
@@ -204,6 +204,8 @@
                                           CanDragItems="True"
                                           DragItemsStarting="OnRowsDragStarting"
                                           DragItemsCompleted="OnRowsDragCompleted"
+                                          ContextRequested="OnRowContextRequested"
+                                          PreviewKeyDown="OnTableKeyDown"
                                           ItemContainerStyle="{StaticResource TableRow}">
                                     <ListView.ItemTemplate>
                                         <DataTemplate x:DataType="local:Row">
@@ -251,6 +253,8 @@
                                 <StackPanel x:Name="EmptyState" Grid.Row="1" Spacing="12" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed">
                                     <ProgressRing x:Name="EmptyRing" Width="32" Height="32" IsActive="False" />
                                     <TextBlock x:Name="EmptyText" MaxWidth="420" TextAlignment="Center" TextWrapping="Wrap" Style="{StaticResource SecondaryText}" />
+                                    <Button x:Name="SignInButton" HorizontalAlignment="Center" MinWidth="120" Content="Sign in" Style="{StaticResource AccentButtonStyle}"
+                                            Click="OnSignIn" Visibility="Collapsed" />
                                 </StackPanel>
                             </Grid>
                         </Border>
@@ -277,7 +281,11 @@
                                             <TextBlock Text="Selected" Style="{StaticResource BodyStrongTextBlockStyle}" />
                                             <TextBlock x:Name="SelectedSummary" Style="{StaticResource CaptionSecondary}" />
                                         </StackPanel>
-                                        <HyperlinkButton x:Name="ClearButton" Grid.Column="1" Content="Clear" Padding="6,4,6,4" VerticalAlignment="Center" Click="OnClearSelection" Visibility="Collapsed" />
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                            <HyperlinkButton x:Name="UndoButton" Content="Undo" Padding="6,4,6,4" Click="OnUndoTicks" Visibility="Collapsed" />
+                                            <HyperlinkButton x:Name="ClearButton" Content="Clear" Padding="6,4,6,4" Click="OnClearSelection" Visibility="Collapsed"
+                                                             ToolTipService.ToolTip="Untick everything (Undo ticks it again)" />
+                                        </StackPanel>
                                         <SplitButton x:Name="SaveSelectionButton" Grid.Column="2" Background="Transparent" BorderBrush="Transparent"
                                                      Height="32" Padding="8,0,8,0" Click="OnSaveSelection" VerticalAlignment="Center"
                                                      Visibility="Collapsed" ToolTipService.ToolTip="Save the selection (Ctrl+S)" AutomationProperties.Name="Save the selection">
@@ -292,8 +300,8 @@
                                                 </MenuFlyout>
                                             </SplitButton.Flyout>
                                         </SplitButton>
-                                        <Button Grid.Column="3" Style="{StaticResource ToolButton}" Width="32" Click="OnHidePane" ToolTipService.ToolTip="Hide" AutomationProperties.Name="Hide the pane">
-                                            <FontIcon Glyph="&#xE76C;" FontSize="12" />
+                                        <Button Grid.Column="3" Style="{StaticResource ToolButton}" Width="32" Click="OnHidePane" ToolTipService.ToolTip="Hide the pane" AutomationProperties.Name="Hide the pane">
+                                            <FontIcon Glyph="&#xE89F;" FontSize="14" />
                                         </Button>
                                     </Grid>
 
@@ -308,8 +316,12 @@
 
                                     <StackPanel Grid.Row="2" Padding="16,0,16,0" Spacing="8">
                                         <TextBlock x:Name="NothingSelected" Style="{StaticResource CaptionSecondary}"
-                                                   Text="Tick site collections, lists, libraries, folders, files or items in the table to see what you can do with them. These are for the whole tenant." />
-                                        <ComboBox x:Name="KindPicker" Header="Act on" HorizontalAlignment="Stretch" SelectionChanged="OnKindChanged" />
+                                                   Text="Tick site collections, lists, libraries, folders, files or items in the table to act on them (Space ticks the row you're on; right-click for more). Until then, these commands are for the whole tenant." />
+                                        <!-- which of what's ticked the commands are for: a tab per kind, then the tenant -->
+                                        <ScrollViewer x:Name="KindScroller" Margin="-12,0,-12,0" HorizontalScrollMode="Auto" HorizontalScrollBarVisibility="Auto"
+                                                      VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled">
+                                            <SelectorBar x:Name="KindBar" SelectionChanged="OnKindChanged" />
+                                        </ScrollViewer>
                                         <AutoSuggestBox x:Name="CommandFilter" PlaceholderText="Find a command" QueryIcon="Filter" TextChanged="OnCommandFilterChanged" />
                                     </StackPanel>
 
@@ -513,6 +525,40 @@
                             </Grid>
                         </Border>
                     </Grid>
+                </Grid>
+
+                <!-- ================= Plans ================= -->
+                <Grid x:Name="PlansPage" Padding="36,0,36,24" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid Margin="0,0,0,12" ColumnSpacing="16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="Plans" Style="{StaticResource PageTitle}" />
+                            <TextBlock Style="{StaticResource CaptionSecondary}" TextWrapping="Wrap" MaxWidth="760" HorizontalAlignment="Left"
+                                       Text="Steps that run in order on what's ticked. Open one to run it, pick what it runs on, or change its steps. Plans that fit what's ticked are also listed first in the pane, beside the commands. AI apps make them too: they show up here as soon as they're saved." />
+                        </StackPanel>
+                        <Button x:Name="NewPlanButton" Grid.Column="1" Style="{StaticResource AccentButtonStyle}" Click="OnNewPlan" VerticalAlignment="Center">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <FontIcon Glyph="&#xE710;" FontSize="14" />
+                                <TextBlock Text="New plan" />
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+                    <ScrollViewer Grid.Row="1">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" MaxWidth="1000" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel x:Name="PlanCards" Spacing="4" Padding="0,0,0,12" />
+                        </Grid>
+                    </ScrollViewer>
                 </Grid>
 
                 <!-- ================= Settings ================= -->

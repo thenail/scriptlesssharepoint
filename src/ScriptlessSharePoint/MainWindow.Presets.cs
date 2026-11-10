@@ -22,14 +22,18 @@ public sealed partial class MainWindow
     /// <summary>The predefined selection on show (its ID), so F5 can run it again.</summary>
     private string? shownPreset;
 
+    /// <summary>The saved selection on show when it's a rule: what it picks is the predefined selection's, under its name.</summary>
+    private SavedSelection? shownRule;
+
+    /// <summary>"Inactive for 90 days", "OneDrives: Inactive for 90 days".</summary>
+    private static string PresetName(string id) =>
+        SitePresets.Find(id) is { } site ? site.OneDrive ? $"OneDrives: {site.Title}" : site.Title : ContentPresets.Find(id)?.Title ?? id;
+
     /// <summary>One to show once the connection is signed in.</summary>
     private string? pendingPreset;
 
     /// <summary>Which parts of the section are open, by tag; kept while the pane is rebuilt.</summary>
-    private readonly Dictionary<string, bool> presetsOpen = new()
-    {
-        [PresetsTag + ":sites"] = true,
-    };
+    private readonly Dictionary<string, bool> presetsOpen = [];
 
     /// <summary>Notes which parts are open, before the pane is rebuilt.</summary>
     private void KeepPresetsOpen()
@@ -44,7 +48,6 @@ public sealed partial class MainWindow
     private void AddPresets()
     {
         var sites = Part(PresetsTag + ":sites", "Site collections", "", "Picked from the admin centre's site properties (needs a SharePoint administrator)");
-        sites.Margin = new Thickness(0, 16, 0, 0);
         var oneDrives = Part(PresetsTag + ":onedrives", "OneDrives", "", "Picked from the admin centre's OneDrive properties (needs a SharePoint administrator)");
         var content = Part(PresetsTag + ":content", "Files and pages", "", "Found by SharePoint search: a few minutes behind, and only what you can open");
         foreach (var preset in SitePresets.All)
@@ -55,6 +58,7 @@ public sealed partial class MainWindow
         {
             content.MenuItems.Add(Rule(preset.Id, preset.Title, preset.Glyph, preset.Description));
         }
+        Nav.MenuItems.Add(NavHeader("Predefined selections", PresetsTag + ":header"));
         Nav.MenuItems.Add(sites);
         Nav.MenuItems.Add(oneDrives);
         Nav.MenuItems.Add(content);
@@ -98,18 +102,19 @@ public sealed partial class MainWindow
     }
 
     /// <summary>What a predefined selection picks, shown ticked.</summary>
-    private async Task ShowPresetAsync(string id, bool refresh)
+    private async Task ShowPresetAsync(string id, bool refresh, SavedSelection? savedAs = null)
     {
         var v = ++view;
         shownPreset = id;
         shownSaved = null;
-        SelectNavQuietly(PresetTag + id);
+        shownRule = savedAs;
+        SelectNavQuietly(savedAs is null ? PresetTag + id : SavedTag + savedAs.File);
         typing?.Stop();
         SearchBox.Text = "";
         query = null;
         ShowPage(TenantPage);
         HideError();
-        ShowAllButton.Visibility = Visibility.Visible;
+        SetCrumbs(savedAs?.Name ?? PresetName(id));
         try
         {
             if (SitePresets.Find(id) is { } sites)
@@ -139,7 +144,7 @@ public sealed partial class MainWindow
     {
         var what = preset.OneDrive ? "OneDrives" : "site collections";
         ShowEmpty($"Reading the {what} from the admin centre…", ring: true);
-        SetStatus(preset.Title, $"Reading the {what}…", working: true);
+        SetStatus($"Reading the {what}…", "", working: true);
         IReadOnlyList<SiteFacts> all;
         if (Demo.On)
         {
@@ -163,7 +168,7 @@ public sealed partial class MainWindow
         var now = DateTimeOffset.UtcNow;
         var sites = all.Where(f => preset.Matches(f, now)).Select(f => SpNode.FromSite(f.Summary)).ToList();
         Show(preset.Id, new SavedSelection { Name = Name(preset.Title, preset.OneDrive), ConnectionId = active.Id, Saved = now, Items = sites, Sites = sites });
-        SetStatus(Name(preset.Title, preset.OneDrive), $"{sites.Count:N0} of {all.Count:N0} {what}. {preset.Description}");
+        SetStatus($"{sites.Count:N0} of {all.Count:N0} {what}", preset.Description);
         if (sites.Count == 0)
         {
             ShowEmpty($"None of the {all.Count:N0} {what}. {preset.Description}");
@@ -175,11 +180,11 @@ public sealed partial class MainWindow
     private async Task ShowContentPresetAsync(ContentPreset preset, int v)
     {
         ShowEmpty("Searching…", ring: true);
-        SetStatus(preset.Title, "Searching…", working: true);
+        SetStatus("Searching…", "", working: true);
         if (Demo.On)
         {
             ShowEmpty("Search isn't part of the demo: its sites are made up.");
-            SetStatus(preset.Title, "");
+            SetStatus("", "");
             return;
         }
         var progress = new Progress<int>(n =>
@@ -206,9 +211,10 @@ public sealed partial class MainWindow
             Sites = sites,
             Parents = found.SelectMany(h => new[] { h.Parent, h.Web }).OfType<SpNode>().DistinctBy(n => n.Key).ToList(),
         });
-        SetStatus(preset.Title,
+        SetStatus(found.Count == 0 ? "None found" :
             $"{Summary(found.Select(h => h.Node))} in {Plural(sites.Count, "site collection", "site collections")}" +
-            $"{(hits.Count >= ContentPresets.Limit ? $" (the first {ContentPresets.Limit:N0})" : "")}. {preset.Description} From search: a few minutes behind, and only what you can open.");
+            $"{(hits.Count >= ContentPresets.Limit ? $" (the first {ContentPresets.Limit:N0})" : "")}",
+            $"{preset.Description} From search: a few minutes behind, and only what you can open.");
         if (found.Count == 0)
         {
             ShowEmpty($"Search found none. {preset.Description}");
@@ -220,7 +226,11 @@ public sealed partial class MainWindow
     {
         ShowSaved(picked);
         shownPreset = id;
-        SelectNavQuietly(PresetTag + id);
-        ShowAllButton.Visibility = Visibility.Visible;
+        // a saved rule: under its own name, picked in the left pane
+        SelectNavQuietly(shownRule is { } rule ? SavedTag + rule.File : PresetTag + id);
+        if (shownRule is { } saved)
+        {
+            SetCrumbs(saved.Name);
+        }
     }
 }

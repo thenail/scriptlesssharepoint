@@ -3,6 +3,7 @@ using System.Globalization;
 
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 
 using ScriptlessSharePoint.Commands;
 using ScriptlessSharePoint.SharePoint;
@@ -45,15 +46,15 @@ public sealed partial class MainWindow
         failedMore.Clear();
         shownSaved = null;
         shownPreset = null;
-        shownPlan = null;
+        shownRule = null;
         // every site collection again: the connection, not a saved selection, is the one picked
         if (active is not null)
         {
             SelectNavQuietly(active.Id);
         }
-        ShowAllButton.Visibility = Visibility.Collapsed;
         ResetTable();
         query = string.IsNullOrWhiteSpace(SearchBox.Text) ? null : SearchBox.Text.Trim();
+        SetCrumbs(query is null ? null : $"Search: {query}");
         ShowEmpty(query is null ? "Loading the site collections…" : $"Looking for “{query}”…", ring: true);
         SetStatus("Loading…", "", working: true);
         try
@@ -162,16 +163,11 @@ public sealed partial class MainWindow
         {
             return;
         }
-        // a saved selection opens again; anything else reloads the site collections
-        // a plan shows its selection (and steps) again
-        if (shownPlan is { } plan)
+        // a saved selection opens again; a predefined one (or a saved rule) reads the site collections again;
+        // anything else reloads them (a plan on show stays)
+        if (shownPreset is { } preset)
         {
-            _ = OpenPlanAsync(plan.Id);
-        }
-        // a predefined selection reads the site collections again
-        else if (shownPreset is { } preset)
-        {
-            _ = ShowPresetAsync(preset, refresh: true);
+            _ = ShowPresetAsync(preset, refresh: true, shownRule);
         }
         // (one from the history has no file: it shows again as it was)
         else if (shownSaved is { } s && (s.File.Length == 0 ? s : savedStore.Load(s.File)) is { } fresh)
@@ -377,6 +373,38 @@ public sealed partial class MainWindow
         {
             return;
         }
+        Note(row);
+        if (row.IsChecked && node.Kind != pickedKind)
+        {
+            pickedKind = node.Kind;
+        }
+        UpdatePane();
+    }
+
+    /// <summary>Ticks or unticks rows together, then brings the pane up to date once.</summary>
+    private void TickRows(IEnumerable<Row> rowsToTick, bool on)
+    {
+        var changed = rowsToTick.Where(r => r.IsNode && r.IsChecked != on).ToList();
+        if (changed.Count == 0)
+        {
+            return;
+        }
+        foreach (var r in changed)
+        {
+            r.SetChecked(on);
+            Note(r);
+        }
+        if (on)
+        {
+            pickedKind = changed.GroupBy(r => r.Node!.Kind).OrderByDescending(g => g.Count()).First().Key;
+        }
+        UpdatePane();
+    }
+
+    /// <summary>Keeps a row's tick in the selection, with its site collection and parent (for saving), and on its twins.</summary>
+    private void Note(Row row)
+    {
+        var node = row.Node!;
         if (row.IsChecked)
         {
             selection[node.Key] = node;
@@ -403,11 +431,129 @@ public sealed partial class MainWindow
         {
             other.SetChecked(row.IsChecked);
         }
-        if (row.IsChecked && node.Kind != pickedKind)
+    }
+
+    // ---- a row's menu, and the keyboard ----
+
+    /// <summary>The row an element of the table is in (its container, and the row).</summary>
+    private (ListViewItem Container, Row Row)? RowAt(DependencyObject? element)
+    {
+        for (var e = element; e is not null && e != Table; e = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(e))
         {
-            pickedKind = node.Kind;
+            if (e is ListViewItem item && Table.ItemFromContainer(item) is Row row)
+            {
+                return (item, row);
+            }
         }
-        UpdatePane();
+        return null;
+    }
+
+    /// <summary>The rows beside a row: under the same open row, or the site collections.</summary>
+    private List<Row> Siblings(Row row) => row.Parent is { } parent
+        ? Children(parent).Where(r => r.IsNode).ToList()
+        : rows.Where(r => r.Depth == 0 && r.IsNode).ToList();
+
+    private void OnRowContextRequested(UIElement sender, ContextRequestedEventArgs e)
+    {
+        if (RowAt(e.OriginalSource as DependencyObject) is not ({ } container, { Node: { } node } row))
+        {
+            return;
+        }
+        e.Handled = true;
+        var menu = new MenuFlyout();
+        void Add(string text, string glyph, Action act, string? keys = null)
+        {
+            var item = new MenuFlyoutItem { Text = text, Icon = new FontIcon { Glyph = glyph } };
+            if (keys is not null)
+            {
+                item.KeyboardAcceleratorTextOverride = keys;
+            }
+            item.Click += (_, _) => act();
+            menu.Items.Add(item);
+        }
+        if (row.CanExpand)
+        {
+            Add(row.IsExpanded ? "Close" : "Open", row.IsExpanded ? "" : "", () => Toggle(row), row.IsExpanded ? "Left" : "Right");
+        }
+        Add("Open in the browser", "", () => OpenUrl(node.Url));
+        Add("Copy the address", "", () => CopyText(node.Url));
+        menu.Items.Add(new MenuFlyoutSeparator());
+        Add(row.IsChecked ? "Untick" : "Tick", row.IsChecked ? "" : "", () => TickRows([row], !row.IsChecked), "Space");
+        var siblings = Siblings(row);
+        var where = row.Parent?.Node is { } parent ? $"in {parent.Title}" : "site collections shown";
+        if (siblings.Any(r => !r.IsChecked))
+        {
+            Add($"Tick all {siblings.Count:N0} {where}", "", () => TickRows(siblings, true));
+        }
+        if (siblings.Count(r => r.IsChecked) > 1)
+        {
+            Add($"Untick all {where}", "", () => TickRows(siblings, false));
+        }
+        if (row.IsExpanded && Children(row).Where(r => r.IsNode).ToList() is { Count: > 0 } inside && inside.Any(r => !r.IsChecked))
+        {
+            Add($"Tick the {inside.Count:N0} in it", "", () => TickRows(inside, true));
+        }
+        if (e.TryGetPosition(container, out var at))
+        {
+            menu.ShowAt(container, at);
+        }
+        else
+        {
+            menu.ShowAt(container);
+        }
+    }
+
+    /// <summary>
+    /// Space ticks the row with the focus, Right opens it (or goes into it),
+    /// Left closes it (or goes up to the row it's in), Enter opens or closes it.
+    /// </summary>
+    private void OnTableKeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (RowAt(FocusManager.GetFocusedElement(Table.XamlRoot) as DependencyObject) is not ({ } container, { Node: not null } row))
+        {
+            return;
+        }
+        var onRow = ReferenceEquals(FocusManager.GetFocusedElement(Table.XamlRoot), container);
+        switch (e.Key)
+        {
+            case Windows.System.VirtualKey.Space when onRow:
+                TickRows([row], !row.IsChecked);
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.Enter when row.CanExpand:
+                Toggle(row);
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.Right when row.CanExpand:
+                if (!row.IsExpanded)
+                {
+                    Toggle(row);
+                }
+                else if (Children(row).FirstOrDefault() is { } child)
+                {
+                    FocusRow(child);
+                }
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.Left:
+                if (row.IsExpanded)
+                {
+                    Collapse(row);
+                }
+                else if (row.Parent is { } parent)
+                {
+                    FocusRow(parent);
+                }
+                e.Handled = true;
+                break;
+        }
+    }
+
+    private void FocusRow(Row row)
+    {
+        Table.ScrollIntoView(row);
+        Table.UpdateLayout();
+        (Table.ContainerFromItem(row) as ListViewItem)?.Focus(FocusState.Keyboard);
     }
 
     private void Untick(string key)
@@ -433,7 +579,11 @@ public sealed partial class MainWindow
         UpdatePane();
     }
 
-    private void OnClearSelection(object sender, RoutedEventArgs e) => ResetSelection();
+    private void OnClearSelection(object sender, RoutedEventArgs e)
+    {
+        KeepTicksBefore("Cleared the ticks", always: true);
+        ResetSelection();
+    }
 
     // ---- after a command ----
 
@@ -515,6 +665,7 @@ public sealed partial class MainWindow
         {
             return;
         }
+        KeepTicksBefore($"Ticked {Summary(found.Select(f => f.Node))}", always: true);
         foreach (var key in selection.Keys.ToList())
         {
             Untick(key);
@@ -668,6 +819,7 @@ public sealed partial class MainWindow
     private void ShowEmpty(string text, bool ring = false)
     {
         rows.Clear();
+        SignInButton.Visibility = Visibility.Collapsed;
         EmptyText.Text = text;
         EmptyRing.IsActive = ring;
         EmptyRing.Visibility = ring ? Visibility.Visible : Visibility.Collapsed;

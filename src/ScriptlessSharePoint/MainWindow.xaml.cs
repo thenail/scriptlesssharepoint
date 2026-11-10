@@ -58,6 +58,17 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         AddAccelerator(VirtualKey.F, VirtualKeyModifiers.Control, () => SearchBox.Focus(FocusState.Keyboard));
         AddAccelerator(VirtualKey.S, VirtualKeyModifiers.Control, () => _ = SaveSelectionAsync());
         AddAccelerator(VirtualKey.S, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => _ = SaveSelectionAsync(asNew: true));
+        // Ctrl+Z ticks again what was ticked before, except in a text box, where it's the text's
+        var undo = new KeyboardAccelerator { Key = VirtualKey.Z, Modifiers = VirtualKeyModifiers.Control };
+        undo.Invoked += (_, e) =>
+        {
+            if (!TypingInText() && TenantPage.Visibility == Visibility.Visible)
+            {
+                e.Handled = true;
+                UndoTicks();
+            }
+        };
+        Root.KeyboardAccelerators.Add(undo);
         Root.Loaded += (_, _) => Start();
         // jobs running as the app closes are kept as they are: they come back paused
         Closed += (_, _) => SaveNow();
@@ -138,6 +149,10 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
             // the predefined selections stay open or closed as they were
             KeepPresetsOpen();
             Nav.MenuItems.Clear();
+            if (data.Connections.Count > 0)
+            {
+                Nav.MenuItems.Add(NavHeader("Connections", "header:connections"));
+            }
             foreach (var c in data.Connections)
             {
                 var item = new NavigationViewItem
@@ -182,6 +197,9 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         }
     }
 
+    /// <summary>A heading over a part of the navigation pane, tagged so the part can be rebuilt with it.</summary>
+    private static NavigationViewItemHeader NavHeader(string text, string tag) => new() { Content = text, Tag = tag };
+
     private MenuFlyout ConnectionMenu(ConnectionProfile c)
     {
         var menu = new MenuFlyout();
@@ -207,10 +225,7 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         {
             return;
         }
-        if (args.SelectedItem is not NavigationViewItem { Tag: string picked } || !picked.StartsWith(PlanTag, StringComparison.Ordinal))
-        {
-            shownPlan = null;
-        }
+        // a plan on show stays in the pane: the left pane picks what's ticked, not what to do with it
         if (args.IsSettingsSelected)
         {
             ShowPage(SettingsPage);
@@ -219,9 +234,9 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         {
             ShowHistory();
         }
-        else if (args.SelectedItem is NavigationViewItem { Tag: string plan } && plan.StartsWith(PlanTag, StringComparison.Ordinal))
+        else if (args.SelectedItem is NavigationViewItem { Tag: PlansTag })
         {
-            _ = OpenPlanAsync(plan[PlanTag.Length..]);
+            ShowPlansPage();
         }
         else if (args.SelectedItem is NavigationViewItem { Tag: string preset } && preset.StartsWith(PresetTag, StringComparison.Ordinal))
         {
@@ -244,12 +259,6 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         {
             OnAddConnection(sender, new RoutedEventArgs());
         }
-        // a plan picked again (after going back to the commands): the plan again
-        else if (args.InvokedItemContainer is NavigationViewItem { Tag: string plan } item && plan.StartsWith(PlanTag, StringComparison.Ordinal) &&
-                 ReferenceEquals(Nav.SelectedItem, item) && PlanView.Visibility != Visibility.Visible)
-        {
-            _ = OpenPlanAsync(plan[PlanTag.Length..]);
-        }
         else if (args.InvokedItemContainer is NavigationViewItem { Tag: string id } && id == active?.Id)
         {
             ShowPage(TenantPage);
@@ -263,7 +272,7 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
 
     private void ShowPage(FrameworkElement page)
     {
-        foreach (var p in new FrameworkElement[] { WelcomePage, TenantPage, JobsPage, SettingsPage })
+        foreach (var p in new FrameworkElement[] { WelcomePage, TenantPage, PlansPage, JobsPage, SettingsPage })
         {
             p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
         }
@@ -280,6 +289,11 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         }
         var v = ++view;
         HideError();
+        // a plan of another connection doesn't stay on show
+        if (shownPlan is { } plan && plan.ConnectionId != id)
+        {
+            shownPlan = null;
+        }
         try
         {
             workspace.SetActive(id);
@@ -298,8 +312,7 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         adminScope = true;
         ResetTable();
         ResetSelection();
-        PageTitle.Text = active.Name;
-        TenantTitle.Text = active.Name;
+        SetCrumbs(null);
         TenantLink.Content = active.TenantUrl.Replace("https://", "");
         TenantDetail.Text = active.KindLabel;
         UpdateAccount();
@@ -336,7 +349,6 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
             AccountPicture.DisplayName = "";
             AccountName.Text = active is null ? "No connection" : "Not signed in";
             AccountDetail.Text = active?.AccountName ?? active?.Name ?? "";
-            SignInButton.Visibility = active is null ? Visibility.Collapsed : Visibility.Visible;
             return;
         }
         AccountPicture.DisplayName = identity.IsApp ? "App" : identity.DisplayName;
@@ -347,9 +359,34 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
 
     private void ShowSignedOut()
     {
-        SetStatus("Not signed in", "Sign in to see the site collections.");
+        SetStatus("Not signed in", "");
         ShowEmpty($"Sign in to {active?.Name} to see its site collections.");
         SignInButton.Visibility = Visibility.Visible;
+    }
+
+    // ---- where you are ----
+
+    /// <summary>The page's title: the connection, then (when there is one) what the table shows instead of every site collection.</summary>
+    private void SetCrumbs(string? shown)
+    {
+        if (active is null)
+        {
+            return;
+        }
+        Crumbs.ItemsSource = shown is null ? new[] { active.Name } : new[] { active.Name, shown };
+        ToolTipService.SetToolTip(Crumbs, shown is null ? null : $"Pick {active.Name} to see every site collection again");
+    }
+
+    /// <summary>The connection in the title: every site collection again (no search).</summary>
+    private void OnCrumbClicked(BreadcrumbBar sender, BreadcrumbBarItemClickedEventArgs args)
+    {
+        if (args.Index != 0 || identity is null || sender.ItemsSource is not string[] { Length: > 1 })
+        {
+            return;
+        }
+        typing?.Stop();
+        SearchBox.Text = "";
+        _ = LoadSitesAsync();
     }
 
     private async void OnSignIn(object sender, RoutedEventArgs e)
@@ -478,6 +515,7 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
     private void SetStatus(string title, string text, bool working = false)
     {
         StatusTitle.Text = title;
+        StatusTitle.Visibility = title.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
         StatusText.Text = text;
         BusyBar.Visibility = working ? Visibility.Visible : Visibility.Collapsed;
     }
