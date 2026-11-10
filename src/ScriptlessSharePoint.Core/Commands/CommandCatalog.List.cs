@@ -169,8 +169,8 @@ public static partial class CommandCatalog
                 ctx.Load(fields, fs => fs.Include(f => f.Title, f => f.InternalName, f => f.TypeDisplayName, f => f.Hidden));
                 await ctx.RunAsync().ConfigureAwait(false);
                 var shown = fields.ToList().Where(f => !f.Hidden).OrderBy(f => f.Title, StringComparer.CurrentCultureIgnoreCase).ToList();
-                return CommandResult.Done($"{shown.Count} columns.",
-                    string.Join(Environment.NewLine, shown.Select(f => $"{f.Title}  ·  {f.InternalName}  ·  {f.TypeDisplayName}")));
+                return CommandResult.Report($"{shown.Count} columns.",
+                    ReportTable.Of(["Column", "Internal name", "Type"], shown.Select(f => new[] { f.Title, f.InternalName, f.TypeDisplayName })));
             },
         };
 
@@ -386,8 +386,10 @@ public static partial class CommandCatalog
                 ctx.Load(views, vs => vs.Include(v => v.Title, v => v.DefaultView, v => v.RowLimit, v => v.PersonalView, v => v.Hidden));
                 await ctx.RunAsync().ConfigureAwait(false);
                 var shown = views.ToList().Where(v => !v.Hidden && !string.IsNullOrEmpty(v.Title)).ToList();
-                return CommandResult.Done($"{Plural(shown.Count, "view", "views")}.", string.Join(Environment.NewLine, shown.Select(v =>
-                    $"{v.Title}{(v.DefaultView ? "  ·  default" : "")}{(v.PersonalView ? "  ·  personal" : "")}  ·  {v.RowLimit} a page")));
+                return CommandResult.Report($"{Plural(shown.Count, "view", "views")}.", ReportTable.Of(["View", "Default", "Personal", "Page size"], shown.Select(v => new[]
+                {
+                    v.Title, v.DefaultView ? "default" : "", v.PersonalView ? "personal" : "", $"{v.RowLimit} a page",
+                })));
             },
         };
 
@@ -454,8 +456,8 @@ public static partial class CommandCatalog
                 ctx.Load(types, ts => ts.Include(t => t.Name, t => t.Hidden, t => t.StringId));
                 await ctx.RunAsync().ConfigureAwait(false);
                 var shown = types.ToList().Where(t => !t.Hidden).ToList();
-                return CommandResult.Done($"{Plural(shown.Count, "content type", "content types")}.",
-                    string.Join(Environment.NewLine, shown.Select(t => $"{t.Name}  ·  {t.StringId}")));
+                return CommandResult.Report($"{Plural(shown.Count, "content type", "content types")}.",
+                    ReportTable.Of(["Content type", "ID"], shown.Select(t => new[] { t.Name, t.StringId })));
             },
         };
 

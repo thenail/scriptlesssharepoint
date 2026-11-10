@@ -44,9 +44,9 @@ public static partial class CommandCatalog
                 var apps = await c.Client.AppsAsync(catalog, site: false, c.Cancellation).ConfigureAwait(false);
                 return apps.Count == 0
                     ? CommandResult.Done("The app catalog has no apps.")
-                    : CommandResult.Done($"{Plural(apps.Count, "app", "apps")}, {apps.Count(a => a.Deployed):N0} deployed.", string.Join(Environment.NewLine, apps
+                    : CommandResult.Report($"{Plural(apps.Count, "app", "apps")}, {apps.Count(a => a.Deployed):N0} deployed.", ReportTable.Of(["App", "Version", "Deployed", "ID"], apps
                         .OrderBy(a => a.Title, StringComparer.CurrentCultureIgnoreCase)
-                        .Select(a => $"{a.Title}  ·  {a.CatalogVersion ?? "?"}  ·  {(a.Deployed ? "deployed" : "not deployed")}  ·  {a.Id}")));
+                        .Select(a => new[] { a.Title, a.CatalogVersion ?? "?", a.Deployed ? "deployed" : "not deployed", a.Id.ToString() })));
             },
         };
 
@@ -144,7 +144,7 @@ public static partial class CommandCatalog
             Glyph = "",
             Run = async (c, n) =>
             {
-                var lines = new List<string>();
+                var lines = new List<string?[]>();
                 var available = 0;
                 foreach (var site in new[] { false, true })
                 {
@@ -160,9 +160,10 @@ public static partial class CommandCatalog
                     available += apps.Count(a => !a.Installed && a.Deployed);
                     lines.AddRange(apps.Where(a => a.Installed)
                         .OrderBy(a => a.Title, StringComparer.CurrentCultureIgnoreCase)
-                        .Select(a => $"{a.Title}  ·  {a.InstalledVersion}{(a.CanUpgrade ? $"  ·  update to {a.CatalogVersion} waiting" : "")}  ·  {(site ? "site collection's catalog" : "tenant's catalog")}"));
+                        .Select(a => new[] { a.Title, a.InstalledVersion?.ToString(), a.CanUpgrade ? $"update to {a.CatalogVersion} waiting" : "", site ? "site collection's catalog" : "tenant's catalog" }));
                 }
-                return CommandResult.Done($"{Plural(lines.Count, "app", "apps")} installed, {available:N0} more to install.", string.Join(Environment.NewLine, lines));
+                return CommandResult.Report($"{Plural(lines.Count, "app", "apps")} installed, {available:N0} more to install.",
+                    ReportTable.Of(["App", "Installed version", "Update", "From"], lines));
             },
         };
 

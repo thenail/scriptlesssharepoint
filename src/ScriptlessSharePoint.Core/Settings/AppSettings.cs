@@ -10,6 +10,11 @@ public sealed record AppSettings
     /// delete or run on many targets (which always ask).
     /// </summary>
     public bool ConfirmChanges { get; init; }
+
+    /// <summary>How wide the pane beside the table is (dragged in the gap before it).</summary>
+    public double PaneWidth { get; init; } = DefaultPaneWidth;
+
+    public const double DefaultPaneWidth = 380;
 }
 
 /// <summary>

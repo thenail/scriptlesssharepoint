@@ -124,6 +124,23 @@ public sealed partial class MainWindow
         return menu;
     }
 
+    /// <summary>
+    /// Picks, in the left pane, what the table shows: the saved selection (or
+    /// saved rule) or predefined selection on show, else its connection. For
+    /// coming back to the table from another page, or a plan, without losing it.
+    /// </summary>
+    private void SelectNavForShown()
+    {
+        if (active is null)
+        {
+            return;
+        }
+        var tag = shownPreset is { } preset
+            ? shownRule is { } rule ? SavedTag + rule.File : PresetTag + preset
+            : shownSaved is { File.Length: > 0 } saved ? SavedTag + saved.File : active.Id;
+        SelectNavQuietly(NavItem(tag) is null ? active.Id : tag);
+    }
+
     /// <summary>Picks a navigation item (a connection, or a saved selection) without showing it again.</summary>
     private void SelectNavQuietly(string tag)
     {

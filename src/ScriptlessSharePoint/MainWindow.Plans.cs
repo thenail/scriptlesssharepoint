@@ -26,9 +26,6 @@ namespace ScriptlessSharePoint.App;
 /// </summary>
 public sealed partial class MainWindow
 {
-    /// <summary>The Plans page's item in the navigation pane.</summary>
-    private const string PlansTag = "plans";
-
     /// <summary>The plans seen so far, with when their prepared run was made: new ones (or new runs) from AI apps are announced.</summary>
     private Dictionary<string, DateTimeOffset?>? knownPlans;
 
@@ -50,14 +47,20 @@ public sealed partial class MainWindow
     private FileSystemWatcher? planWatcher;
     private DispatcherQueueTimer? planChanged;
 
-    // ---- the Plans page ----
+    // ---- the plans, in the pane ----
 
-    /// <summary>The plans changed: the Plans page (when it shows) and the pane's list for what's ticked.</summary>
+    /// <summary>
+    /// Whether an open plan came from the pane's list of plans: its back
+    /// arrow goes back to the list (else to the commands).
+    /// </summary>
+    private bool planFromList;
+
+    /// <summary>The plans changed: the pane's list of them, or its commands for what's ticked (plans first).</summary>
     private void RefreshPlans()
     {
-        if (PlansPage.Visibility == Visibility.Visible)
+        if (PlansListView.Visibility == Visibility.Visible)
         {
-            BuildPlansPage();
+            BuildPlansList();
         }
         if (OverviewView.Visibility == Visibility.Visible)
         {
@@ -65,14 +68,34 @@ public sealed partial class MainWindow
         }
     }
 
-    private void ShowPlansPage()
+    /// <summary>
+    /// Plans, in the left pane: every plan, in the pane beside the table. The
+    /// left pane keeps what it has picked (the selection the plans run on),
+    /// and the table stays as it is.
+    /// </summary>
+    private void ShowPlansList()
     {
-        ShowPage(PlansPage);
-        BuildPlansPage();
+        if (active is null)
+        {
+            return;
+        }
+        ShowPage(TenantPage);
+        // from another page (Jobs, Settings): back to what the table shows, picked
+        SelectNavForShown();
+        HideReport();
+        ShowPane(true);
+        editingStep = null;
+        planFromList = false;
+        OverviewView.Visibility = Visibility.Collapsed;
+        FormView.Visibility = Visibility.Collapsed;
+        ResultsView.Visibility = Visibility.Collapsed;
+        PlanView.Visibility = Visibility.Collapsed;
+        PlansListView.Visibility = Visibility.Visible;
+        BuildPlansList();
     }
 
-    /// <summary>Every plan, by connection: what it does, what it starts on, who made it, how it last went.</summary>
-    private void BuildPlansPage()
+    /// <summary>This connection's plans, then other connections': what each does, what it starts on, who made it, how it last went.</summary>
+    private void BuildPlansList()
     {
         PlanCards.Children.Clear();
         var connections = workspace.Load().Connections;
@@ -84,20 +107,20 @@ public sealed partial class MainWindow
             {
                 Text = "No plans yet. Make one with New plan, or with Add to plan beside a command's Run. AI apps make them through the MCP server (Settings shows how to connect one).",
                 Style = (Style)Application.Current.Resources["CaptionSecondary"],
-                Margin = new Thickness(1, 8, 0, 0),
+                Margin = new Thickness(4, 4, 4, 0),
             });
             return;
         }
         var runs = historyStore.List().Where(r => r.Plan is not null).ToList();
-        foreach (var group in plans.GroupBy(p => p.ConnectionId))
+        foreach (var group in plans.GroupBy(p => p.ConnectionId).OrderBy(g => g.Key == active?.Id ? 0 : 1))
         {
             if (connections.Count > 1)
             {
                 PlanCards.Children.Add(new TextBlock
                 {
-                    Text = connections.First(c => c.Id == group.Key).Name,
-                    Style = (Style)Application.Current.Resources["GroupHeader"],
-                    Margin = new Thickness(1, PlanCards.Children.Count == 0 ? 8 : 24, 0, 6),
+                    Text = (group.Key == active?.Id ? "" : "Other connections: ") + connections.First(c => c.Id == group.Key).Name,
+                    Style = (Style)Application.Current.Resources["PaneGroupHeader"],
+                    Margin = new Thickness(4, PlanCards.Children.Count == 0 ? 4 : 16, 0, 2),
                 });
             }
             foreach (var plan in group)
@@ -110,12 +133,6 @@ public sealed partial class MainWindow
     private FrameworkElement PlanCard(Plan plan, RunRecord? last)
     {
         var caption = (Style)Application.Current.Resources["CaptionSecondary"];
-        var grid = new Grid { ColumnSpacing = 16 };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.Children.Add(new FontIcon { Glyph = "\uE9D5", FontSize = 20, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 2, 0, 0) });
-
         var text = new StackPanel { Spacing = 2 };
         text.Children.Add(new TextBlock { Text = plan.Name, Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"], TextWrapping = TextWrapping.Wrap });
         if (!string.IsNullOrWhiteSpace(plan.Description))
@@ -146,31 +163,45 @@ public sealed partial class MainWindow
                 Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SystemFillColorCautionBrush"],
             });
         }
-        Grid.SetColumn(text, 1);
-        grid.Children.Add(text);
 
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        var buttons = new Grid { Margin = new Thickness(0, 8, 0, 0) };
+        buttons.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        buttons.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var open = new Button { Content = "Open", MinWidth = 80 };
-        ToolTipService.SetToolTip(open, "Open it beside its connection's table, on what's ticked (or its prepared run or test selection)");
-        open.Click += (_, _) => _ = OpenPlanAsync(plan.Id);
+        ToolTipService.SetToolTip(open, plan.ConnectionId == active?.Id
+            ? "Open it here, on what's ticked (or, with nothing ticked, its prepared run or test selection)"
+            : "Open it on its own connection");
+        open.Click += (_, _) => OpenFromList(plan.Id);
         buttons.Children.Add(open);
-        var more = new Button { Style = (Style)Application.Current.Resources["ToolButton"], Content = new FontIcon { Glyph = "\uE712", FontSize = 14 }, Flyout = PlanMenu(plan.Id) };
+        var more = new Button { Style = (Style)Application.Current.Resources["ToolButton"], Content = new FontIcon { Glyph = "", FontSize = 14 }, Flyout = PlanMenu(plan.Id) };
         ToolTipService.SetToolTip(more, "Rename, duplicate or delete");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(more, $"More for {plan.Name}");
+        Grid.SetColumn(more, 1);
         buttons.Children.Add(more);
-        Grid.SetColumn(buttons, 2);
-        grid.Children.Add(buttons);
+        text.Children.Add(buttons);
 
         var card = new Border
         {
             Style = (Style)Application.Current.Resources["Card"],
             CornerRadius = (CornerRadius)Application.Current.Resources["ControlCornerRadius"],
-            Padding = new Thickness(16, 14, 16, 14),
-            Child = grid,
+            Padding = new Thickness(14, 12, 8, 10),
+            Child = text,
             ContextFlyout = PlanMenu(plan.Id),
         };
-        card.DoubleTapped += (_, _) => _ = OpenPlanAsync(plan.Id);
+        card.DoubleTapped += (_, _) => OpenFromList(plan.Id);
         return card;
+    }
+
+    /// <summary>A plan opened from the list: its back arrow comes back here.</summary>
+    private void OpenFromList(string id)
+    {
+        _ = OpenPlanFromListAsync();
+
+        async Task OpenPlanFromListAsync()
+        {
+            await OpenPlanAsync(id);
+            planFromList = PlanView.Visibility == Visibility.Visible;
+        }
     }
 
     /// <summary>A plan with no steps, for the active connection (or one picked), opened to add its first step.</summary>
@@ -208,7 +239,7 @@ public sealed partial class MainWindow
             return;
         }
         knownPlans?.TryAdd(plan.Id, null);
-        await OpenPlanAsync(plan.Id);
+        OpenFromList(plan.Id);
     }
 
     /// <summary>Follows Plans\ in the data folder: plans an AI app makes or changes show up straight away.</summary>
@@ -314,8 +345,9 @@ public sealed partial class MainWindow
             ShowError(new InvalidOperationException($"The plan \"{plan.Name}\" is for a connection that's gone."));
             return;
         }
-        // from the Plans or Jobs page (or for another connection): its connection, in the left pane
-        if (TenantPage.Visibility != Visibility.Visible || active?.Id != plan.ConnectionId)
+        // for another connection: that connection, in the left pane (from the Plans or Jobs page,
+        // what the table shows stays picked: ShowPlanSelectionAsync picks it)
+        if (active?.Id != plan.ConnectionId)
         {
             SelectNavQuietly(plan.ConnectionId);
         }
@@ -330,8 +362,9 @@ public sealed partial class MainWindow
     }
 
     /// <summary>
-    /// Opens a plan on what's ticked. With nothing ticked it can start on, its
-    /// prepared run (or, without one, its test selection) is ticked instead.
+    /// Opens a plan on what's ticked, which stays picked in the left pane. With
+    /// nothing ticked, its prepared run (or, without one, its test selection)
+    /// is ticked instead.
     /// </summary>
     private async Task ShowPlanSelectionAsync(Plan plan)
     {
@@ -340,7 +373,9 @@ public sealed partial class MainWindow
             ResetPlanValues();
         }
         shownPlan = plan;
-        if (!PlanCheck.StartsOnAny(plan, selection.Values.Select(n => n.Kind)))
+        // with nothing ticked, its prepared run or test selection; what's picked stays as it is (when it
+        // doesn't fit, the plan says so, and "Run it on…" offers the rest)
+        if (selection.Count == 0 && !PlanCheck.StartsOnAny(plan, []))
         {
             if (plan.Prepared is { } prepared)
             {
@@ -353,6 +388,8 @@ public sealed partial class MainWindow
         }
         shownPlan = plan;
         ShowPage(TenantPage);
+        // the selection it runs on stays picked in the left pane (its test selection or prepared run: the connection)
+        SelectNavForShown();
         ShowPane(true);
         ShowPlan(plan);
     }
@@ -411,6 +448,7 @@ public sealed partial class MainWindow
         OverviewView.Visibility = Visibility.Collapsed;
         FormView.Visibility = Visibility.Collapsed;
         ResultsView.Visibility = Visibility.Collapsed;
+        PlansListView.Visibility = Visibility.Collapsed;
         PlanView.Visibility = Visibility.Visible;
 
         PlanTitle.Text = plan.Name;
@@ -846,6 +884,12 @@ public sealed partial class MainWindow
     private void OnClosePlan(object sender, RoutedEventArgs e)
     {
         shownPlan = null;
+        // opened from the list of plans: back to the list
+        if (planFromList)
+        {
+            ShowPlansList();
+            return;
+        }
         ShowOverview();
     }
 
@@ -1131,11 +1175,15 @@ public sealed partial class MainWindow
             grid.Children.Add(text);
             var button = new Button { Style = (Style)Application.Current.Resources["PaneCommand"], Content = grid };
             ToolTipService.SetToolTip(button, plan.Description ?? plan.Name);
-            button.Click += (_, _) => _ = ShowPlanSelectionAsync(plan);
+            button.Click += (_, _) =>
+            {
+                planFromList = false;
+                _ = ShowPlanSelectionAsync(plan);
+            };
             CommandList.Children.Add(button);
         }
         var all = new HyperlinkButton { Content = "All plans…", Margin = new Thickness(12, 0, 0, 4), Padding = new Thickness(0, 2, 0, 2) };
-        all.Click += (_, _) => Nav.SelectedItem = PlansItem;
+        all.Click += (_, _) => ShowPlansList();
         CommandList.Children.Add(all);
     }
 

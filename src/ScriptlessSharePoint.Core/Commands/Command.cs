@@ -125,6 +125,10 @@ public sealed class CommandArgs
 public sealed record CommandResult(bool Ok, string Message, string? Detail = null)
 {
     public static CommandResult Done(string message, string? detail = null) => new(true, message, detail);
+
+    /// <summary>A report: what it lists as a table, and as the lines the results show (the table's text).</summary>
+    public static CommandResult Report(string message, ReportTable table) =>
+        new(true, message, table.Rows.Count == 0 ? null : table.Text()) { Table = table };
     public static CommandResult Skipped(string message) => new(true, message) { WasSkipped = true };
     public static CommandResult Failed(string message) => new(false, message);
 
@@ -142,6 +146,47 @@ public sealed record CommandResult(bool Ok, string Message, string? Detail = nul
 
     /// <summary>What a finder found inside the target (<see cref="After.Tick"/>).</summary>
     public IReadOnlyList<FoundNode> Found { get; init; } = [];
+
+    /// <summary>What a report lists, with its columns named: the app shows it as a table and saves it as CSV.</summary>
+    public ReportTable? Table { get; init; }
+}
+
+/// <summary>
+/// What a report command lists, a row per thing (a user, a column, a version),
+/// under named columns. An empty cell is something that doesn't apply.
+/// </summary>
+public sealed record ReportTable(IReadOnlyList<string> Columns, IReadOnlyList<IReadOnlyList<string>> Rows)
+{
+    /// <summary>How the lines of a report separate their parts.</summary>
+    public const string Separator = "  ·  ";
+
+    public static ReportTable Of(IReadOnlyList<string> columns, IEnumerable<IEnumerable<string?>> rows) =>
+        new(columns, rows.Select(r => (IReadOnlyList<string>)r.Select(c => c?.Trim() ?? "").ToList()).ToList());
+
+    /// <summary>
+    /// The columns of several tables together (one per target), in the order
+    /// they first come: a target that lacks one (fewer details) leaves it empty.
+    /// </summary>
+    public static IReadOnlyList<string> Union(IEnumerable<ReportTable> tables) => tables.SelectMany(t => t.Columns).Distinct().ToList();
+
+    /// <summary>One of its rows, its cells put under <paramref name="columns"/> by name.</summary>
+    public IReadOnlyList<string> Cells(IReadOnlyList<string> row, IReadOnlyList<string> columns)
+    {
+        var at = Columns.Select((name, i) => (name, i)).GroupBy(x => x.name).ToDictionary(g => g.Key, g => g.First().i);
+        return columns.Select(c => at.TryGetValue(c, out var i) && i < row.Count ? row[i] : "").ToList();
+    }
+
+    /// <summary>The rows as lines of text: the cells that have something, <see cref="Separator"/> between.</summary>
+    public string Text() => string.Join(Environment.NewLine, Rows.Select(r => string.Join(Separator, r.Where(c => c.Length > 0))));
+
+    /// <summary>Lines a command listed without naming its columns (or from before it did): each line's parts in "Detail 1", "Detail 2"…</summary>
+    public static ReportTable FromLines(string detail)
+    {
+        var rows = detail.Split('\n').Select(l => l.TrimEnd('\r')).Where(l => l.Trim().Length > 0)
+            .Select(l => (IReadOnlyList<string>)l.Split(Separator).Select(x => x.Trim()).ToList()).ToList();
+        var width = rows.Count == 0 ? 1 : rows.Max(r => r.Count);
+        return new(Enumerable.Range(1, width).Select(i => width == 1 ? "Detail" : $"Detail {i}").ToList(), rows);
+    }
 }
 
 /// <summary>What the table does with a row after a command ran on it.</summary>

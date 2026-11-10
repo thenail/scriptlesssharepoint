@@ -202,6 +202,11 @@ public sealed partial class MainWindow
             Ticked = job.Ticked,
         };
         job.Record = SaveRun(job.Snapshot());
+        if (job.Record.Args.Count > 0)
+        {
+            lastRuns?.Remove(job.Command.Id);
+            lastRuns?.Add(job.Command.Id, job.Record);
+        }
         job.Notify();
         return true;
     }
@@ -365,6 +370,22 @@ public sealed partial class MainWindow
             else if (watchedJob != job && job.State == JobState.Done)
             {
                 ShowToast($"{job.Command.Title}: done", JobSummary(job), ("Jobs", () => Nav.SelectedItem = HistoryItem));
+            }
+            // a finder that found things, all well: straight on to what to do with them (the table shows
+            // them ticked, its message offers Undo, and Jobs keeps how each target went)
+            if (watchedJob == job && job.Plan is null && job.Command.After == After.Tick && job.State == JobState.Done &&
+                job.ConnectionId == active?.Id && job.Targets.Values.All(t => t.Result is { Ok: true }) &&
+                job.Targets.Values.Any(t => t.Result!.Found.Count > 0))
+            {
+                Unwatch();
+                ShowOverview();
+            }
+            // a report that lists a lot (or over several targets): its table in the table's place, the results stay in the pane
+            else if (watchedJob == job && job.Plan is null && job.Command.ReadOnly && job.State == JobState.Done && job.ConnectionId == active?.Id &&
+                     job.Targets.Values.Select(t => t.Result?.Table).OfType<ReportTable>().Where(t => t.Rows.Count > 0).ToList() is { Count: > 0 } tables &&
+                     (tables.Count > 1 || tables[0].Rows.Count >= 5))
+            {
+                ShowReport(job.Command.Title, ReportSourcesOf(job));
             }
         }
     }
@@ -919,6 +940,8 @@ public sealed partial class MainWindow
         var failed = e.Records.Sum(r => r.Targets.Count(t => t.Outcome is RunOutcome.Failed or RunOutcome.Pending));
         TickRunFailedButton.Visibility = !tenant && failed > 0 && failed < e.Records.Sum(r => r.Targets.Count) ? Visibility.Visible : Visibility.Collapsed;
         TickRunFailedButton.IsEnabled = connection is not null;
+        ReportRunButton.Visibility = ReportRecord(e.Records) is not null ? Visibility.Visible : Visibility.Collapsed;
+        ReportRunButton.IsEnabled = connection is not null;
 
         foreach (var r in e.Records.OrderBy(r => r.Step ?? 1))
         {

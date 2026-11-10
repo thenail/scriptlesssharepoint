@@ -48,10 +48,13 @@ public sealed record RunTarget
     /// <summary>What a finder found in it.</summary>
     public IReadOnlyList<FoundNode>? Found { get; init; }
 
+    /// <summary>What a report listed in it, as a table.</summary>
+    public ReportTable? Table { get; init; }
+
     /// <summary>Its result again (for a job carrying on after a restart).</summary>
     public CommandResult Result() => (Outcome switch
     {
-        RunOutcome.Done => CommandResult.Done(Message, Detail),
+        RunOutcome.Done => CommandResult.Done(Message, Detail) with { Table = Table },
         RunOutcome.Unchanged => CommandResult.Skipped(Message),
         RunOutcome.NotRun => CommandResult.Declined() with { Message = Message },
         _ => CommandResult.Failed(Message) with { Detail = Detail },

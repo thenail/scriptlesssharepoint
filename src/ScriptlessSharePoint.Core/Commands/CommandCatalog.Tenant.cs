@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 
 using Microsoft.Online.SharePoint.TenantAdministration;
@@ -111,7 +112,7 @@ public static partial class CommandCatalog
             {
                 using var ctx = await c.AdminAsync().ConfigureAwait(false);
                 var tenant = new Tenant(ctx);
-                var text = new StringBuilder();
+                var rows = new List<string[]>();
                 var count = 0;
                 string? next = null;
                 do
@@ -122,14 +123,14 @@ public static partial class CommandCatalog
                     foreach (var d in page)
                     {
                         count++;
-                        text.AppendLine($"{d.Url}  ·  deleted {d.DeletionTime:d}, {d.DaysRemaining} days left");
+                        rows.Add([d.Url, d.DeletionTime.ToString("d", CultureInfo.CurrentCulture), $"{d.DaysRemaining} days left"]);
                     }
                     next = page.NextStartIndexFromSharePoint;
                 }
                 while (!string.IsNullOrEmpty(next) && count < 5000);
                 return count == 0
                     ? CommandResult.Done("The recycle bin has no site collections.")
-                    : CommandResult.Done($"{count:N0} deleted site collections.", text.ToString().TrimEnd());
+                    : CommandResult.Report($"{count:N0} deleted site collections.", ReportTable.Of(["Site collection", "Deleted", "Can be restored for"], rows));
             },
         };
 
@@ -507,9 +508,9 @@ public static partial class CommandCatalog
                 await ctx.RunAsync().ConfigureAwait(false);
                 return designs.Count == 0
                     ? CommandResult.Done("The tenant has no site designs of its own.")
-                    : CommandResult.Done($"{designs.Count} site designs.", string.Join(Environment.NewLine, designs.ToList()
+                    : CommandResult.Report($"{designs.Count} site designs.", ReportTable.Of(["Site design", "ID", "For"], designs.ToList()
                         .OrderBy(d => d.Title, StringComparer.CurrentCultureIgnoreCase)
-                        .Select(d => $"{d.Title}  ·  {d.Id}  ·  {(d.WebTemplate == "68" ? "communication site" : d.WebTemplate == "64" ? "team site" : d.WebTemplate)}")));
+                        .Select(d => new[] { d.Title, d.Id.ToString(), d.WebTemplate == "68" ? "communication site" : d.WebTemplate == "64" ? "team site" : d.WebTemplate })));
             },
         };
 
@@ -555,8 +556,8 @@ public static partial class CommandCatalog
                 await ctx.RunAsync().ConfigureAwait(false);
                 return hubs.Count == 0
                     ? CommandResult.Done("The tenant has no hub sites.")
-                    : CommandResult.Done($"{hubs.Count} hub sites.", string.Join(Environment.NewLine,
-                        hubs.ToList().OrderBy(h => h.Title, StringComparer.CurrentCultureIgnoreCase).Select(h => $"{h.Title}  ·  {h.SiteUrl}")));
+                    : CommandResult.Report($"{hubs.Count} hub sites.", ReportTable.Of(["Hub", "Address"],
+                        hubs.ToList().OrderBy(h => h.Title, StringComparer.CurrentCultureIgnoreCase).Select(h => new[] { h.Title, h.SiteUrl })));
             },
         };
     }

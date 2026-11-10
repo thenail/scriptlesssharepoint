@@ -812,6 +812,8 @@ public sealed partial class MainWindow
 
     private void ResetTable()
     {
+        // what replaces the rows sets the title: a report on show just goes
+        HideReport(restoreTitle: false);
         rows.Clear();
         HideEmpty();
     }

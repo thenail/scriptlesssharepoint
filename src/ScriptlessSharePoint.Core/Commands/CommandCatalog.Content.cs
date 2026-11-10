@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.SharePoint.Client;
 
 using ScriptlessSharePoint.SharePoint;
@@ -306,9 +307,12 @@ public static partial class CommandCatalog
                 ctx.Load(file, f => f.UIVersionLabel);
                 ctx.Load(file.Versions, vs => vs.Include(v => v.VersionLabel, v => v.Created, v => v.CreatedBy.Title, v => v.Size, v => v.CheckInComment));
                 await ctx.RunAsync().ConfigureAwait(false);
-                var lines = file.Versions.ToList().AsEnumerable().Reverse().Select(v =>
-                    $"{v.VersionLabel}  ·  {v.Created.ToLocalTime():g}  ·  {v.CreatedBy.Title}  ·  {Csom.Size(v.Size)}{(string.IsNullOrWhiteSpace(v.CheckInComment) ? "" : $"  ·  {v.CheckInComment}")}");
-                return CommandResult.Done($"Version {file.UIVersionLabel}, {Plural(file.Versions.Count, "earlier one", "earlier ones")}.", string.Join(Environment.NewLine, lines));
+                var rows = file.Versions.ToList().AsEnumerable().Reverse().Select(v => new[]
+                {
+                    v.VersionLabel, v.Created.ToLocalTime().ToString("g", CultureInfo.CurrentCulture), v.CreatedBy.Title, Csom.Size(v.Size), v.CheckInComment,
+                });
+                return CommandResult.Report($"Version {file.UIVersionLabel}, {Plural(file.Versions.Count, "earlier one", "earlier ones")}.",
+                    ReportTable.Of(["Version", "Created", "By", "Size", "Comment"], rows));
             },
         };
 

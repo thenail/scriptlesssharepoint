@@ -234,10 +234,6 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         {
             ShowHistory();
         }
-        else if (args.SelectedItem is NavigationViewItem { Tag: PlansTag })
-        {
-            ShowPlansPage();
-        }
         else if (args.SelectedItem is NavigationViewItem { Tag: string preset } && preset.StartsWith(PresetTag, StringComparison.Ordinal))
         {
             _ = OpenPresetAsync(preset[PresetTag.Length..]);
@@ -259,6 +255,11 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         {
             OnAddConnection(sender, new RoutedEventArgs());
         }
+        // the plans, in the pane: what's picked on the left (what they run on) stays picked
+        else if (args.InvokedItemContainer == PlansItem)
+        {
+            ShowPlansList();
+        }
         else if (args.InvokedItemContainer is NavigationViewItem { Tag: string id } && id == active?.Id)
         {
             ShowPage(TenantPage);
@@ -272,7 +273,7 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
 
     private void ShowPage(FrameworkElement page)
     {
-        foreach (var p in new FrameworkElement[] { WelcomePage, TenantPage, PlansPage, JobsPage, SettingsPage })
+        foreach (var p in new FrameworkElement[] { WelcomePage, TenantPage, JobsPage, SettingsPage })
         {
             p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
         }
@@ -289,6 +290,8 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         }
         var v = ++view;
         HideError();
+        // what's ticked stays with its connection, for when it's picked again
+        StashTicks(id);
         // a plan of another connection doesn't stay on show
         if (shownPlan is { } plan && plan.ConnectionId != id)
         {
@@ -312,6 +315,7 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
         adminScope = true;
         ResetTable();
         ResetSelection();
+        RestoreTicks(id);
         SetCrumbs(null);
         TenantLink.Content = active.TenantUrl.Replace("https://", "");
         TenantDetail.Text = active.KindLabel;
@@ -380,6 +384,12 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
     /// <summary>The connection in the title: every site collection again (no search).</summary>
     private void OnCrumbClicked(BreadcrumbBar sender, BreadcrumbBarItemClickedEventArgs args)
     {
+        // a report on show: what's before it in the title is the table it's in place of
+        if (ReportCard.Visibility == Visibility.Visible && sender.ItemsSource is string[] items && args.Index == items.Length - 2)
+        {
+            HideReport();
+            return;
+        }
         if (args.Index != 0 || identity is null || sender.ItemsSource is not string[] { Length: > 1 })
         {
             return;
@@ -615,6 +625,8 @@ public sealed partial class MainWindow : Window, IRowOwner, ICommandHost
     {
         settings = settingsStore.Load();
         ConfirmChangesSwitch.IsOn = settings.ConfirmChanges;
+        PaneColumn.Width = new GridLength(settings.PaneWidth);
+        SetUpSplitter();
     }
 
     private void OnConfirmChangesToggled(object sender, RoutedEventArgs e)

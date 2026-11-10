@@ -152,11 +152,16 @@ public static partial class CommandCatalog
             }
         }
         var text = new StringBuilder();
-        foreach (var (name, value) in lines.Where(l => !string.IsNullOrWhiteSpace(l.Value)))
+        var shown = lines.Where(l => !string.IsNullOrWhiteSpace(l.Value)).ToList();
+        foreach (var (name, value) in shown)
         {
             text.Append(name).Append(": ").AppendLine(value);
         }
-        return CommandResult.Done("Details below.", text.ToString().TrimEnd());
+        // as a table too: a row for this one, a column per detail (the report puts each target's row together)
+        return CommandResult.Done("Details below.", text.ToString().TrimEnd()) with
+        {
+            Table = ReportTable.Of(shown.Select(l => l.Name).ToList(), [shown.Select(l => l.Value)]),
+        };
     }
 
     private static async Task WebDetailsAsync(CommandContext c, SpNode n, List<(string, string?)> lines)

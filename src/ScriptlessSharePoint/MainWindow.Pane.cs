@@ -84,7 +84,7 @@ public sealed partial class MainWindow
         foreach (var k in kinds)
         {
             var n = k == NodeKind.Tenant ? 0 : selection.Values.Count(x => x.Kind == k);
-            var tab = new SelectorBarItem { Text = k == NodeKind.Tenant ? "Tenant" : $"{NodeKinds.Heading(k)} {n:N0}", Tag = k };
+            var tab = new SelectorBarItem { Text = k == NodeKind.Tenant ? "Tenant" : $"{NodeKinds.Heading(k)} ({n:N0})", Tag = k };
             ToolTipService.SetToolTip(tab, k == NodeKind.Tenant ? "Commands for the whole tenant" : $"Commands for the {NodeKinds.Count(k, n)} ticked");
             KindBar.Items.Add(tab);
         }
@@ -261,10 +261,12 @@ public sealed partial class MainWindow
             fields.Add((p, control, value));
         }
         ShowFields();
+        OfferLastInputs(c, values);
 
         OverviewView.Visibility = Visibility.Collapsed;
         ResultsView.Visibility = Visibility.Collapsed;
         PlanView.Visibility = Visibility.Collapsed;
+        PlansListView.Visibility = Visibility.Collapsed;
         FormView.Visibility = Visibility.Visible;
         if (FormFields.Children.FirstOrDefault() is Control first)
         {
@@ -421,6 +423,7 @@ public sealed partial class MainWindow
         FormView.Visibility = Visibility.Collapsed;
         ResultsView.Visibility = Visibility.Collapsed;
         PlanView.Visibility = Visibility.Collapsed;
+        PlansListView.Visibility = Visibility.Collapsed;
         OverviewView.Visibility = Visibility.Visible;
         BuildCommandList();
     }
@@ -491,6 +494,7 @@ public sealed partial class MainWindow
         FormView.Visibility = Visibility.Collapsed;
         OverviewView.Visibility = Visibility.Collapsed;
         PlanView.Visibility = Visibility.Collapsed;
+        PlansListView.Visibility = Visibility.Collapsed;
         ResultsView.Visibility = Visibility.Visible;
         UpdateWatched();
     }
@@ -527,6 +531,7 @@ public sealed partial class MainWindow
         ToolTipService.SetToolTip(DoneButton, job.IsOver ? null : "It carries on in the background: Jobs shows it");
         var failed = job.Targets.Values.Count(t => t.Result is { Ok: false });
         SelectFailedButton.Visibility = job.IsOver && failed > 0 && failed < job.Targets.Count && job.Kind != NodeKind.Tenant ? Visibility.Visible : Visibility.Collapsed;
+        ShowReportLink.Visibility = HasReport(ReportSourcesOf(job)) ? Visibility.Visible : Visibility.Collapsed;
         if (shownPlan is not null && PlanView.Visibility == Visibility.Visible)
         {
             RefreshPlanCheck();
@@ -807,6 +812,7 @@ public sealed partial class MainWindow
     {
         PaneToggle.IsChecked = show;
         Pane.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-        PaneColumn.Width = show ? new GridLength(380) : new GridLength(0);
+        PaneSplitter.Visibility = Pane.Visibility;
+        PaneColumn.Width = show ? new GridLength(settings.PaneWidth) : new GridLength(0);
     }
 }

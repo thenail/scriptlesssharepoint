@@ -67,6 +67,21 @@ public sealed class RunHistoryTests : IDisposable
     }
 
     [Fact]
+    public void Keeps_what_a_report_listed_as_a_table()
+    {
+        var store = new RunHistoryStore(folder);
+        var table = ReportTable.Of(["Column", "Internal name", "Type"], [["Title", "Title", "Single line of text"], ["Due", "DueDate", null]]);
+        var run = store.Save(Run(DateTimeOffset.Now) with
+        {
+            Targets = [new RunTarget { Target = Docs, Outcome = RunOutcome.Done, Message = "2 columns.", Detail = table.Text(), Table = table }],
+        });
+        var loaded = store.List().Single(r => r.File == run.File).Targets[0];
+        Assert.Equal(["Column", "Internal name", "Type"], loaded.Table!.Columns);
+        Assert.Equal(["Due", "DueDate", ""], loaded.Table.Rows[1]);
+        Assert.Equal(table.Text(), loaded.Result().Table!.Text());
+    }
+
+    [Fact]
     public void Keeps_the_newest_runs_only()
     {
         var store = new RunHistoryStore(folder);

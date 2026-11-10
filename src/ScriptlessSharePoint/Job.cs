@@ -187,6 +187,7 @@ internal sealed class Job
             Message = t.Result?.Message ?? (State == JobState.Paused ? "Paused." : "Didn't finish: the app closed while it ran."),
             Detail = t.Result?.Detail,
             Found = t.Result?.Found is { Count: > 0 } found ? found : null,
+            Table = t.Result?.Table,
         }).ToList(),
     };
 

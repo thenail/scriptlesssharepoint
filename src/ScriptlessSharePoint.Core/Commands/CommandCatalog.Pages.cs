@@ -56,19 +56,24 @@ public static partial class CommandCatalog
                 ctx.Load(ctx.Web, w => w.ServerRelativeUrl);
                 await ctx.RunAsync().ConfigureAwait(false);
                 var home = $"{ctx.Web.ServerRelativeUrl.TrimEnd('/')}/{ctx.Web.RootFolder.WelcomePage}";
-                var lines = items.ToList().Select(i =>
+                var rows = items.ToList().Select(i =>
                 {
                     var file = Convert.ToString(i["FileLeafRef"], CultureInfo.InvariantCulture) ?? "";
                     var title = Convert.ToString(i["Title"], CultureInfo.InvariantCulture);
                     var version = Convert.ToString(i["_UIVersionString"], CultureInfo.InvariantCulture) ?? "";
                     var news = i["PromotedState"] is { } p && Convert.ToDouble(p, CultureInfo.InvariantCulture) >= 2;
                     var modified = i["Modified"] is DateTime m ? m.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) : "";
-                    return $"{(string.IsNullOrWhiteSpace(title) ? file : title)}  ·  {file}  ·  {(version.EndsWith(".0", StringComparison.Ordinal) ? "published" : "draft")}" +
-                           (news ? "  ·  news" : "") +
-                           (string.Equals(Convert.ToString(i["FileRef"], CultureInfo.InvariantCulture), home, StringComparison.OrdinalIgnoreCase) ? "  ·  home page" : "") +
-                           $"  ·  {modified}";
+                    return new[]
+                    {
+                        string.IsNullOrWhiteSpace(title) ? file : title,
+                        file,
+                        version.EndsWith(".0", StringComparison.Ordinal) ? "published" : "draft",
+                        news ? "news" : "",
+                        string.Equals(Convert.ToString(i["FileRef"], CultureInfo.InvariantCulture), home, StringComparison.OrdinalIgnoreCase) ? "home page" : "",
+                        modified,
+                    };
                 }).ToList();
-                return CommandResult.Done($"{Plural(lines.Count, "page", "pages")}.", string.Join(Environment.NewLine, lines));
+                return CommandResult.Report($"{Plural(rows.Count, "page", "pages")}.", ReportTable.Of(["Page", "File", "State", "News", "Home page", "Modified"], rows));
             },
         };
 

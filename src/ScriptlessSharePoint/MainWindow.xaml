@@ -66,7 +66,8 @@
             </NavigationView.PaneHeader>
 
             <NavigationView.FooterMenuItems>
-                <NavigationViewItem x:Name="PlansItem" Content="Plans" Tag="plans">
+                <NavigationViewItem x:Name="PlansItem" Content="Plans" SelectsOnInvoked="False"
+                                    ToolTipService.ToolTip="Every plan, in the pane beside the table (what's picked here stays picked)">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE9D5;" />
                     </NavigationViewItem.Icon>
@@ -168,13 +169,14 @@
                     </InfoBar>
 
                     <!-- The table and, beside it, what to do with what's ticked -->
-                    <Grid Grid.Row="2" ColumnSpacing="16">
+                    <Grid x:Name="WorkArea" Grid.Row="2">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition x:Name="PaneColumn" Width="380" />
                         </Grid.ColumnDefinitions>
 
-                        <Border Style="{StaticResource Card}" Padding="4,4,4,0">
+                        <Border x:Name="TableCard" Style="{StaticResource Card}" Padding="4,4,4,0">
                             <Grid>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
@@ -260,7 +262,65 @@
                         </Border>
 
                         <!-- ================= the pane ================= -->
-                        <Border x:Name="Pane" Grid.Column="1" Style="{StaticResource Card}">
+                        <!-- a report, in the table's place: what a command listed, to sort, filter, copy and save -->
+                        <Border x:Name="ReportCard" Style="{StaticResource Card}" Padding="4,4,4,0" Visibility="Collapsed">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <!-- (what it is and how many rows: in the page's title and status) -->
+                                <Grid Padding="8,6,4,10" ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <AutoSuggestBox x:Name="ReportFilter" Width="320" HorizontalAlignment="Left" VerticalAlignment="Center" QueryIcon="Filter"
+                                                    PlaceholderText="Filter the rows" TextChanged="OnReportFilterChanged" />
+                                    <DropDownButton Grid.Column="1" Content="Export" VerticalAlignment="Center" ToolTipService.ToolTip="Copy the table, or save it for Excel">
+                                        <DropDownButton.Flyout>
+                                            <MenuFlyout Placement="BottomEdgeAlignedRight">
+                                                <MenuFlyoutItem Text="Copy the table" Click="OnCopyReport">
+                                                    <MenuFlyoutItem.Icon>
+                                                        <FontIcon Glyph="&#xE8C8;" />
+                                                    </MenuFlyoutItem.Icon>
+                                                </MenuFlyoutItem>
+                                                <MenuFlyoutItem Text="Save as CSV…" Click="OnSaveReportCsv">
+                                                    <MenuFlyoutItem.Icon>
+                                                        <FontIcon Glyph="&#xE9F9;" />
+                                                    </MenuFlyoutItem.Icon>
+                                                </MenuFlyoutItem>
+                                            </MenuFlyout>
+                                        </DropDownButton.Flyout>
+                                    </DropDownButton>
+                                    <Button Grid.Column="2" Style="{StaticResource ToolButton}" Click="OnCloseReport" VerticalAlignment="Center"
+                                            ToolTipService.ToolTip="Back to the table" AutomationProperties.Name="Close the report">
+                                        <FontIcon Glyph="&#xE711;" FontSize="14" />
+                                    </Button>
+                                </Grid>
+                                <Border Grid.Row="1" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,1,0,1" Margin="-4,0,-4,0" Height="36">
+                                    <Grid x:Name="ReportHeader" Margin="8,0,8,0" />
+                                </Border>
+                                <ListView x:Name="ReportList" Grid.Row="2" SelectionMode="None" ItemContainerStyle="{StaticResource TableRow}"
+                                          ContainerContentChanging="OnReportRowShown" ContextRequested="OnReportRowContext">
+                                    <ListView.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Height="34" Background="Transparent" />
+                                        </DataTemplate>
+                                    </ListView.ItemTemplate>
+                                </ListView>
+                                <TextBlock x:Name="ReportEmpty" Grid.Row="2" Style="{StaticResource SecondaryText}" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                           Text="No rows match the filter." Visibility="Collapsed" />
+                            </Grid>
+                        </Border>
+
+                        <!-- the gap before the pane: dragged, it makes the pane wider or narrower -->
+                        <local:Splitter x:Name="PaneSplitter" Grid.Column="1" Width="16"
+                                        ToolTipService.ToolTip="Drag to make the pane wider or narrower; double-click for the usual width"
+                                        AutomationProperties.Name="Pane width" />
+                        <Border x:Name="Pane" Grid.Column="2" Style="{StaticResource Card}">
                             <Grid>
                                 <!-- what's ticked, and the commands for it -->
                                 <Grid x:Name="OverviewView" RowSpacing="8" Padding="0,12,0,0">
@@ -351,6 +411,7 @@
                                         <StackPanel Spacing="12" Padding="0,0,0,12">
                                             <TextBlock x:Name="FormDescription" TextWrapping="Wrap" />
                                             <TextBlock x:Name="FormPowerShell" Style="{StaticResource CaptionSecondary}" IsTextSelectionEnabled="True" />
+                                            <HyperlinkButton x:Name="LastInputsLink" Padding="0" Visibility="Collapsed" Click="OnUseLastInputs" />
                                             <InfoBar x:Name="FormNote" IsOpen="False" IsClosable="False" Severity="Informational" />
                                             <StackPanel x:Name="FormFields" Spacing="14" />
                                             <TextBlock x:Name="FormProblems" Foreground="{ThemeResource SystemFillColorCriticalBrush}" TextWrapping="Wrap" Visibility="Collapsed" />
@@ -418,6 +479,34 @@
                                     </Border>
                                 </Grid>
 
+                                <!-- the plans: this connection's, then others', to open (on what's ticked) or make one -->
+                                <Grid x:Name="PlansListView" Visibility="Collapsed" RowSpacing="8" Padding="0,8,0,0">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                    <Grid Padding="8,0,16,0" ColumnSpacing="4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button Style="{StaticResource ToolButton}" Click="OnBackToCommands" ToolTipService.ToolTip="Back to the commands" AutomationProperties.Name="Back to the commands">
+                                            <FontIcon Glyph="&#xE72B;" FontSize="14" />
+                                        </Button>
+                                        <TextBlock Grid.Column="1" Text="Plans" Style="{StaticResource BodyStrongTextBlockStyle}" VerticalAlignment="Center" />
+                                        <Button x:Name="NewPlanButton" Grid.Column="2" Click="OnNewPlan" ToolTipService.ToolTip="A plan with no steps yet, for this connection">
+                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                <FontIcon Glyph="&#xE710;" FontSize="12" />
+                                                <TextBlock Text="New plan" />
+                                            </StackPanel>
+                                        </Button>
+                                    </Grid>
+                                    <ScrollViewer Grid.Row="1" Padding="12,0,12,12">
+                                        <StackPanel x:Name="PlanCards" Spacing="6" Padding="0,0,4,0" />
+                                    </ScrollViewer>
+                                </Grid>
+
                                 <!-- a run: how far it's got, and how each target went -->
                                 <Grid x:Name="ResultsView" Visibility="Collapsed" RowSpacing="8" Padding="0,12,0,0">
                                     <Grid.RowDefinitions>
@@ -429,12 +518,29 @@
                                         <TextBlock x:Name="ResultsTitle" Style="{StaticResource BodyStrongTextBlockStyle}" TextWrapping="Wrap" />
                                         <TextBlock x:Name="ResultsInputs" Style="{StaticResource CaptionSecondary}" TextWrapping="Wrap" IsTextSelectionEnabled="True" Visibility="Collapsed" />
                                         <TextBlock x:Name="ResultsSummary" Style="{StaticResource CaptionSecondary}" />
+                                        <HyperlinkButton x:Name="ShowReportLink" Padding="0" Content="Show as a table" Click="OnShowReport" Visibility="Collapsed"
+                                                         ToolTipService.ToolTip="What it listed, in the table's place: sort, filter, copy or save it" />
                                         <ProgressBar x:Name="ResultsBar" />
                                     </StackPanel>
                                     <ListView x:Name="ResultsList" Grid.Row="1" SelectionMode="None" Padding="4,0,4,0" />
                                     <Border Grid.Row="2" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,1,0,0" Padding="16,12,16,14">
                                         <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-                                            <Button x:Name="CopyResultsButton" Content="Copy" Click="OnCopyResults" ToolTipService.ToolTip="Copy the results as text" AutomationProperties.Name="Copy the results as text" />
+                                            <DropDownButton x:Name="CopyResultsButton" Content="Export" ToolTipService.ToolTip="Copy the results, or save them for Excel">
+                                                <DropDownButton.Flyout>
+                                                    <MenuFlyout Placement="TopEdgeAlignedLeft">
+                                                        <MenuFlyoutItem Text="Copy as text" Click="OnCopyResults">
+                                                            <MenuFlyoutItem.Icon>
+                                                                <FontIcon Glyph="&#xE8C8;" />
+                                                            </MenuFlyoutItem.Icon>
+                                                        </MenuFlyoutItem>
+                                                        <MenuFlyoutItem Text="Save as CSV…" Click="OnSaveResultsCsv">
+                                                            <MenuFlyoutItem.Icon>
+                                                                <FontIcon Glyph="&#xE9F9;" />
+                                                            </MenuFlyoutItem.Icon>
+                                                        </MenuFlyoutItem>
+                                                    </MenuFlyout>
+                                                </DropDownButton.Flyout>
+                                            </DropDownButton>
                                             <Button x:Name="SelectFailedButton" Content="Tick the failed ones" Click="OnSelectFailed" Visibility="Collapsed" />
                                             <Button x:Name="CancelRunButton" Content="Cancel" Click="OnCancelRun" />
                                             <Button x:Name="PauseRunButton" Click="OnPauseRun" MinWidth="80" />
@@ -503,11 +609,28 @@
                                             <ColumnDefinition Width="*" />
                                         </Grid.ColumnDefinitions>
                                         <StackPanel Orientation="Horizontal" Spacing="8">
-                                            <Button Content="Copy" Click="OnCopyRun" ToolTipService.ToolTip="Copy the job as text" />
+                                            <DropDownButton Content="Export" ToolTipService.ToolTip="Copy the job, or save its results for Excel">
+                                                <DropDownButton.Flyout>
+                                                    <MenuFlyout Placement="TopEdgeAlignedLeft">
+                                                        <MenuFlyoutItem Text="Copy as text" Click="OnCopyRun">
+                                                            <MenuFlyoutItem.Icon>
+                                                                <FontIcon Glyph="&#xE8C8;" />
+                                                            </MenuFlyoutItem.Icon>
+                                                        </MenuFlyoutItem>
+                                                        <MenuFlyoutItem Text="Save as CSV…" Click="OnSaveRunCsv">
+                                                            <MenuFlyoutItem.Icon>
+                                                                <FontIcon Glyph="&#xE9F9;" />
+                                                            </MenuFlyoutItem.Icon>
+                                                        </MenuFlyoutItem>
+                                                    </MenuFlyout>
+                                                </DropDownButton.Flyout>
+                                            </DropDownButton>
                                             <Button x:Name="DeleteRunButton" Content="Delete" Click="OnDeleteRun" ToolTipService.ToolTip="Remove this job from the list" />
                                         </StackPanel>
                                         <!-- a finished job -->
                                         <StackPanel x:Name="FinishedJobActions" Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                                            <Button x:Name="ReportRunButton" Content="Show as a table" Click="OnReportRun" Visibility="Collapsed"
+                                                    ToolTipService.ToolTip="What it listed, as a table beside its connection's commands" />
                                             <Button x:Name="TickRunFailedButton" Content="Tick the failed ones" Click="OnTickRunFailed" />
                                             <Button x:Name="TickRunButton" Content="Tick these" Click="OnTickRun"
                                                     ToolTipService.ToolTip="Show its targets ticked in the connection's table" />
@@ -525,40 +648,6 @@
                             </Grid>
                         </Border>
                     </Grid>
-                </Grid>
-
-                <!-- ================= Plans ================= -->
-                <Grid x:Name="PlansPage" Padding="36,0,36,24" Visibility="Collapsed">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
-                    <Grid Margin="0,0,0,12" ColumnSpacing="16">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <StackPanel>
-                            <TextBlock Text="Plans" Style="{StaticResource PageTitle}" />
-                            <TextBlock Style="{StaticResource CaptionSecondary}" TextWrapping="Wrap" MaxWidth="760" HorizontalAlignment="Left"
-                                       Text="Steps that run in order on what's ticked. Open one to run it, pick what it runs on, or change its steps. Plans that fit what's ticked are also listed first in the pane, beside the commands. AI apps make them too: they show up here as soon as they're saved." />
-                        </StackPanel>
-                        <Button x:Name="NewPlanButton" Grid.Column="1" Style="{StaticResource AccentButtonStyle}" Click="OnNewPlan" VerticalAlignment="Center">
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <FontIcon Glyph="&#xE710;" FontSize="14" />
-                                <TextBlock Text="New plan" />
-                            </StackPanel>
-                        </Button>
-                    </Grid>
-                    <ScrollViewer Grid.Row="1">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" MaxWidth="1000" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <StackPanel x:Name="PlanCards" Spacing="4" Padding="0,0,0,12" />
-                        </Grid>
-                    </ScrollViewer>
                 </Grid>
 
                 <!-- ================= Settings ================= -->

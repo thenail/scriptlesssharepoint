@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 
 using Microsoft.Online.SharePoint.TenantAdministration;
@@ -448,10 +449,14 @@ public static partial class CommandCatalog
                     .OrderBy(u => u.Title, StringComparer.CurrentCultureIgnoreCase)
                     .ToList();
                 var guests = people.Count(u => u.LoginName.Contains("#ext#", StringComparison.OrdinalIgnoreCase));
-                return CommandResult.Done($"{Plural(people.Count, "person", "people")}{(guests > 0 ? $", {guests} of them guests" : "")}.", string.Join(Environment.NewLine, people.Select(u =>
-                    $"{u.Title}  ·  {(string.IsNullOrEmpty(u.Email) ? u.LoginName : u.Email)}" +
-                    (u.IsSiteAdmin ? "  ·  administrator" : "") +
-                    (u.LoginName.Contains("#ext#", StringComparison.OrdinalIgnoreCase) ? "  ·  guest" : ""))));
+                return CommandResult.Report($"{Plural(people.Count, "person", "people")}{(guests > 0 ? $", {guests} of them guests" : "")}.",
+                    ReportTable.Of(["Name", "Email or sign-in", "Administrator", "Guest"], people.Select(u => new[]
+                    {
+                        u.Title,
+                        string.IsNullOrEmpty(u.Email) ? u.LoginName : u.Email,
+                        u.IsSiteAdmin ? "administrator" : "",
+                        u.LoginName.Contains("#ext#", StringComparison.OrdinalIgnoreCase) ? "guest" : "",
+                    })));
             },
         };
 
@@ -543,8 +548,8 @@ public static partial class CommandCatalog
                 using var ctx = await c.SiteAsync(n).ConfigureAwait(false);
                 var admins = ctx.LoadQuery(ctx.Web.SiteUsers.Where(u => u.IsSiteAdmin).Include(u => u.Title, u => u.Email, u => u.LoginName));
                 await ctx.RunAsync().ConfigureAwait(false);
-                var list = admins.Select(u => $"{u.Title}  ·  {(string.IsNullOrEmpty(u.Email) ? u.LoginName : u.Email)}").ToList();
-                return CommandResult.Done($"{list.Count} administrators.", string.Join(Environment.NewLine, list));
+                var list = admins.Select(u => new[] { u.Title, string.IsNullOrEmpty(u.Email) ? u.LoginName : u.Email }).ToList();
+                return CommandResult.Report($"{list.Count} administrators.", ReportTable.Of(["Name", "Email or sign-in"], list));
             },
         };
 
@@ -771,9 +776,16 @@ public static partial class CommandCatalog
                     return CommandResult.Done("The recycle bin is empty.");
                 }
                 var size = items.ToList().Sum(i => i.Size);
-                return CommandResult.Done($"{(items.Count == limit ? "The newest " : "")}{Plural(items.Count, "item", "items")}, {Csom.Size(size)}.", string.Join(Environment.NewLine, items.ToList().Select(i =>
-                    $"{i.Title}  ·  /{i.DirName}  ·  {i.DeletedDate.ToLocalTime():g} by {i.DeletedByName}  ·  {Csom.Size(i.Size)}" +
-                    (i.ItemState == RecycleBinItemState.SecondStageRecycleBin ? "  ·  second stage" : ""))));
+                return CommandResult.Report($"{(items.Count == limit ? "The newest " : "")}{Plural(items.Count, "item", "items")}, {Csom.Size(size)}.",
+                    ReportTable.Of(["Name", "Was in", "Deleted", "By", "Size", "Stage"], items.ToList().Select(i => new[]
+                    {
+                        i.Title,
+                        $"/{i.DirName}",
+                        i.DeletedDate.ToLocalTime().ToString("g", CultureInfo.CurrentCulture),
+                        i.DeletedByName,
+                        Csom.Size(i.Size),
+                        i.ItemState == RecycleBinItemState.SecondStageRecycleBin ? "second stage" : "",
+                    })));
             },
         };
 

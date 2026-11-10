@@ -53,8 +53,8 @@ public static partial class CommandCatalog
                     .OrderBy(f => f.Group, StringComparer.CurrentCultureIgnoreCase)
                     .ThenBy(f => f.Title, StringComparer.CurrentCultureIgnoreCase)
                     .ToList();
-                return CommandResult.Done($"{Plural(shown.Count, "column", "columns")}.",
-                    string.Join(Environment.NewLine, shown.Select(f => $"{f.Group}  ·  {f.Title}  ·  {f.InternalName}  ·  {f.TypeDisplayName}")));
+                return CommandResult.Report($"{Plural(shown.Count, "column", "columns")}.",
+                    ReportTable.Of(["Group", "Column", "Internal name", "Type"], shown.Select(f => new[] { f.Group, f.Title, f.InternalName, f.TypeDisplayName })));
             },
         };
 
@@ -189,8 +189,8 @@ public static partial class CommandCatalog
                     .OrderBy(t => t.Group, StringComparer.CurrentCultureIgnoreCase)
                     .ThenBy(t => t.Name, StringComparer.CurrentCultureIgnoreCase)
                     .ToList();
-                return CommandResult.Done($"{Plural(shown.Count, "content type", "content types")}.",
-                    string.Join(Environment.NewLine, shown.Select(t => $"{t.Group}  ·  {t.Name}  ·  {t.StringId}")));
+                return CommandResult.Report($"{Plural(shown.Count, "content type", "content types")}.",
+                    ReportTable.Of(["Group", "Content type", "ID"], shown.Select(t => new[] { t.Group, t.Name, t.StringId })));
             },
         };
 
