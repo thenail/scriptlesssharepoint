@@ -131,7 +131,7 @@ public static partial class CommandCatalog
                 var picker = await PeoplePickerAsync(ctx, c.Args.Text("people")).ConfigureAwait(false);
                 var result = Microsoft.SharePoint.Client.Web.ShareObject(ctx, TenantUrls.Resource(n.WebUrl) + n.ServerRelativeUrl, picker,
                     c.Args.Text("role") == "edit" ? EditRole : ViewRole, 0, false, c.Args.Toggle("email"), false, "", c.Args["message"] ?? "", true);
-                return await SharedAsync(ctx, result, c.Args.Text("role") == "edit" ? "can edit" : "can view").ConfigureAwait(false);
+                return await SharedAsync(ctx, result, c.Args.Text("role") == "edit" ? "Shared: they can edit." : "Shared: they can view.").ConfigureAwait(false);
             },
         };
 
@@ -164,7 +164,7 @@ public static partial class CommandCatalog
                 var picker = await PeoplePickerAsync(ctx, c.Args.Text("people")).ConfigureAwait(false);
                 var result = Microsoft.SharePoint.Client.Web.ShareObject(ctx, n.WebUrl, picker, $"group:{group.Id}", group.Id, false,
                     c.Args.Toggle("email"), false, "", c.Args["message"] ?? "", true);
-                return await SharedAsync(ctx, result, $"in {group.Title}").ConfigureAwait(false);
+                return await SharedAsync(ctx, result, $"Invited: they're in {group.Title}.").ConfigureAwait(false);
             },
         };
     }
@@ -204,12 +204,12 @@ public static partial class CommandCatalog
         return "[" + string.Join(",", resolved.Select(r => r.Value)) + "]";
     }
 
-    private static async Task<CommandResult> SharedAsync(ClientContext ctx, SharingResult result, string how)
+    private static async Task<CommandResult> SharedAsync(ClientContext ctx, SharingResult result, string done)
     {
         ctx.Load(result, r => r.StatusCode, r => r.ErrorMessage);
         await ctx.RunAsync().ConfigureAwait(false);
         return result.StatusCode == SharingOperationStatusCode.CompletedSuccessfully
-            ? CommandResult.Done($"Shared: they {how}.")
+            ? CommandResult.Done(done)
             : CommandResult.Failed(string.IsNullOrEmpty(result.ErrorMessage) ? $"SharePoint said {result.StatusCode}." : result.ErrorMessage);
     }
 }

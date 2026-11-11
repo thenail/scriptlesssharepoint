@@ -729,9 +729,18 @@ public static partial class CommandCatalog
             Run = async (c, n) =>
             {
                 using var ctx = await c.SiteAsync(n).ConfigureAwait(false);
-                ctx.Site.RecycleBin.RestoreAll();
-                await ctx.RunAsync().ConfigureAwait(false);
-                return CommandResult.Done("Restored everything in the recycle bin.");
+                try
+                {
+                    ctx.Site.RecycleBin.RestoreAll();
+                    await ctx.RunAsync().ConfigureAwait(false);
+                    return CommandResult.Done("Restored everything in the recycle bin.");
+                }
+                catch (ServerException)
+                {
+                    // RestoreAll stops at the first thing that can't come back yet, e.g. a file's
+                    // old version before the file itself: put them back in order instead
+                }
+                return await RestoreEachAsync(ctx, c.Cancellation).ConfigureAwait(false);
             },
         };
 
@@ -839,6 +848,83 @@ public static partial class CommandCatalog
     /// (Set-SPOUser), or, for a site owner who isn't a SharePoint administrator,
     /// in the site itself.
     /// </summary>
+    /// <summary>
+    /// Puts back what's in a site collection's recycle bin in an order SharePoint
+    /// accepts: sites, lists and folders, then files and items, then their old
+    /// versions. A batch SharePoint refuses goes one by one; what still can't come
+    /// back is listed.
+    /// </summary>
+    private static async Task<CommandResult> RestoreEachAsync(ClientContext ctx, CancellationToken ct)
+    {
+        const int PageSize = 5000;
+        static int Order(RecycleBinItemType t) => t switch
+        {
+            RecycleBinItemType.Web => 0,
+            RecycleBinItemType.List => 1,
+            RecycleBinItemType.Folder or RecycleBinItemType.FolderWithLists => 2,
+            RecycleBinItemType.File or RecycleBinItemType.ListItem => 3,
+            RecycleBinItemType.FileVersion or RecycleBinItemType.ListItemVersion => 5,
+            _ => 4,
+        };
+        var restored = 0;
+        var left = new Dictionary<Guid, string>();
+        // both stages, as the recycle bin's list shows them (Site.RecycleBin leaves some out), a page at a time:
+        // what's restored leaves the bin, so each pass reads the first page again
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var page = ctx.Site.GetRecycleBinItems(null, PageSize, false, RecycleBinOrderBy.DeletedDate, RecycleBinItemState.None);
+            ctx.Load(page, b => b.Include(i => i.Id, i => i.Title, i => i.ItemType));
+            await ctx.RunAsync().ConfigureAwait(false);
+            var todo = page.ToList().Where(i => !left.ContainsKey(i.Id)).OrderBy(i => Order(i.ItemType)).ToList();
+            if (todo.Count == 0)
+            {
+                break;
+            }
+            foreach (var batch in todo.Chunk(50))
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    foreach (var item in batch)
+                    {
+                        item.Restore();
+                    }
+                    await ctx.RunAsync().ConfigureAwait(false);
+                    restored += batch.Length;
+                    continue;
+                }
+                catch (ServerException)
+                {
+                }
+                foreach (var item in batch)
+                {
+                    try
+                    {
+                        item.Restore();
+                        await ctx.RunAsync().ConfigureAwait(false);
+                        restored++;
+                    }
+                    catch (ServerException e)
+                    {
+                        left[item.Id] = $"{item.Title}  ·  {e.Message}";
+                    }
+                }
+            }
+            if (page.Count < PageSize)
+            {
+                break;
+            }
+        }
+        if (left.Count == 0)
+        {
+            return CommandResult.Done($"Restored everything in the recycle bin ({Plural(restored, "item", "items")}).");
+        }
+        var message = $"Restored {Plural(restored, "item", "items")}; {Plural(left.Count, "item", "items")} couldn't come back.";
+        var detail = string.Join(Environment.NewLine, left.Values);
+        return restored == 0 ? CommandResult.Failed(message) with { Detail = detail } : CommandResult.Done(message, detail);
+    }
+
     private static async Task<CommandResult> SetSiteAdminAsync(CommandContext c, SpNode n, string who, bool admin)
     {
         try

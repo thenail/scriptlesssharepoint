@@ -93,18 +93,22 @@ public static partial class CommandCatalog
             Id = "web.search",
             Title = "Show in search results",
             Group = "Search",
-            Description = "Whether the site's content shows up in search.",
+            Description = "Whether the site's content shows up in search. Where custom scripts are blocked, they're allowed for the moment (needs a SharePoint administrator).",
             PowerShell = "Set-PnPWeb -NoCrawl",
             Targets = Webs,
             Glyph = "\uE721",
             Parameters = [Toggle("show", "Show in search", true)],
             Run = async (c, n) =>
             {
-                using var ctx = await c.WebAsync(n).ConfigureAwait(false);
-                ctx.Web.NoCrawl = !c.Args.Toggle("show");
-                ctx.Web.Update();
-                await ctx.RunAsync().ConfigureAwait(false);
-                return CommandResult.Done(c.Args.Toggle("show") ? "Shown in search." : "Left out of search.");
+                // SharePoint refuses NoCrawl where custom scripts are blocked, as on every modern site
+                var allowed = await c.WithScriptsAsync(n, async () =>
+                {
+                    using var ctx = await c.WebAsync(n).ConfigureAwait(false);
+                    ctx.Web.NoCrawl = !c.Args.Toggle("show");
+                    ctx.Web.Update();
+                    await ctx.RunAsync().ConfigureAwait(false);
+                }).ConfigureAwait(false);
+                return CommandResult.Done(Csom.ScriptsNote(c.Args.Toggle("show") ? "Shown in search." : "Left out of search.", allowed));
             },
         };
 
@@ -197,10 +201,10 @@ public static partial class CommandCatalog
                 var props = ctx.Web.AllProperties;
                 ctx.Load(props);
                 await ctx.RunAsync().ConfigureAwait(false);
-                var lines = props.FieldValues.OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
-                    .Select(p => $"{p.Key} = {Shorten(Convert.ToString(p.Value, CultureInfo.InvariantCulture) ?? "", 200)}")
+                var rows = props.FieldValues.OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
+                    .Select(p => new[] { p.Key, Shorten(Convert.ToString(p.Value, CultureInfo.InvariantCulture) ?? "", 200) })
                     .ToList();
-                return CommandResult.Done($"{lines.Count:N0} values.", string.Join(Environment.NewLine, lines));
+                return CommandResult.Report($"{rows.Count:N0} values.", ReportTable.Of(["Key", "Value"], rows));
             },
         };
 

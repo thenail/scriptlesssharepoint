@@ -80,11 +80,17 @@ public static partial class CommandCatalog
                 var terms = set.GetAllTermsIncludeDeprecated();
                 ctx.Load(terms, ts => ts.Include(t => t.PathOfTerm, t => t.Id, t => t.IsDeprecated, t => t.IsAvailableForTagging));
                 await ctx.RunAsync().ConfigureAwait(false);
-                var lines = terms.ToList()
+                var rows = terms.ToList()
                     .OrderBy(t => t.PathOfTerm, StringComparer.CurrentCultureIgnoreCase)
-                    .Select(t => $"{t.PathOfTerm.Replace(";", " / ", StringComparison.Ordinal)}{(t.IsDeprecated ? "  ·  deprecated" : "")}{(!t.IsAvailableForTagging ? "  ·  not for tagging" : "")}  ·  {t.Id}")
+                    .Select(t => new[]
+                    {
+                        t.PathOfTerm.Replace(";", " / ", StringComparison.Ordinal),
+                        t.IsDeprecated ? "deprecated" : "",
+                        !t.IsAvailableForTagging ? "not for tagging" : "",
+                        t.Id.ToString(),
+                    })
                     .ToList();
-                return CommandResult.Done($"{Plural(lines.Count, "term", "terms")}.", string.Join(Environment.NewLine, lines));
+                return CommandResult.Report($"{Plural(rows.Count, "term", "terms")}.", ReportTable.Of(["Term", "Deprecated", "Tagging", "ID"], rows));
             }),
         };
 

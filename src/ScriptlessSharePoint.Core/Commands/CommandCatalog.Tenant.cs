@@ -533,7 +533,8 @@ public static partial class CommandCatalog
                 await ctx.RunAsync().ConfigureAwait(false);
                 return themes.Count == 0
                     ? CommandResult.Done("The tenant has no themes of its own.")
-                    : CommandResult.Done($"{themes.Count} themes.", string.Join(Environment.NewLine, themes.ToList().Select(t => t.Name).Order(StringComparer.CurrentCultureIgnoreCase)));
+                    : CommandResult.Report($"{themes.Count} themes.", ReportTable.Of(["Theme"],
+                        themes.ToList().Select(t => t.Name).Order(StringComparer.CurrentCultureIgnoreCase).Select(name => new[] { name })));
             },
         };
 

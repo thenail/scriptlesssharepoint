@@ -229,20 +229,26 @@ public sealed partial class SharePointClient
         }
         using var ctx = await ContextAsync(parent.WebUrl, ct).ConfigureAwait(false);
         var list = ctx.Web.Lists.GetById(listId);
+        // a file's size and who has it checked out are library columns: asking a list for them fails
+        string[] fields = parent.InLibrary
+            ? ["FileLeafRef", "FileRef", "Title", "Modified", "ItemChildCount", "FolderChildCount", "File_x0020_Size", "CheckoutUser"]
+            : ["FileLeafRef", "FileRef", "Title", "Modified", "ItemChildCount", "FolderChildCount"];
         var query = new CamlQuery
         {
             ViewXml =
                 $"<View{(recursive ? " Scope='RecursiveAll'" : "")}><Query><OrderBy Override='TRUE'><FieldRef Name='ID'/></OrderBy></Query>" +
-                "<ViewFields><FieldRef Name='FileLeafRef'/><FieldRef Name='FileRef'/><FieldRef Name='Title'/><FieldRef Name='Modified'/>" +
-                "<FieldRef Name='File_x0020_Size'/><FieldRef Name='ItemChildCount'/><FieldRef Name='FolderChildCount'/><FieldRef Name='CheckoutUser'/></ViewFields>" +
+                $"<ViewFields>{string.Concat(fields.Select(f => $"<FieldRef Name='{f}'/>"))}</ViewFields>" +
                 $"<RowLimit Paged='TRUE'>{FolderPageSize}</RowLimit></View>",
             FolderServerRelativeUrl = parent.Kind == NodeKind.Folder ? parent.ServerRelativeUrl : null,
             ListItemCollectionPosition = string.IsNullOrEmpty(cursor) ? null : new ListItemCollectionPosition { PagingInfo = cursor },
         };
         var items = list.GetItems(query);
-        ctx.Load(items, i => i.ListItemCollectionPosition, i => i.Include(
-            x => x.Id, x => x.FileSystemObjectType, x => x["FileLeafRef"], x => x["FileRef"], x => x["Title"], x => x["Modified"],
-            x => x["File_x0020_Size"], x => x["ItemChildCount"], x => x["FolderChildCount"], x => x["CheckoutUser"]));
+        System.Linq.Expressions.Expression<Func<ListItem, object>>[] load =
+        [
+            x => x.Id, x => x.FileSystemObjectType,
+            .. fields.Select(f => (System.Linq.Expressions.Expression<Func<ListItem, object>>)(x => x[f])),
+        ];
+        ctx.Load(items, i => i.ListItemCollectionPosition, i => i.Include(load));
         ctx.Load(list, l => l.RootFolder.ServerRelativeUrl);
         await ctx.ExecuteQueryAsync().ConfigureAwait(false);
 
@@ -270,7 +276,7 @@ public sealed partial class SharePointClient
                 ItemCount = folder ? ChildCount(item["ItemChildCount"]) + ChildCount(item["FolderChildCount"]) : null,
                 Size = kind == NodeKind.File && long.TryParse(item["File_x0020_Size"]?.ToString(), out var size) ? size : null,
                 Modified = item["Modified"] is DateTime m ? Utc(m) : null,
-                CheckedOutTo = (item["CheckoutUser"] as FieldUserValue)?.LookupValue,
+                CheckedOutTo = parent.InLibrary ? (item["CheckoutUser"] as FieldUserValue)?.LookupValue : null,
             });
         }
         nodes.Sort((a, b) =>
