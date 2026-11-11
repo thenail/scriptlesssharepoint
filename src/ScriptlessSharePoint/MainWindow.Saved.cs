@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Media;
 
 using Windows.ApplicationModel.DataTransfer;
 
+using ScriptlessSharePoint.Plans;
 using ScriptlessSharePoint.Selections;
 using ScriptlessSharePoint.SharePoint;
 
@@ -388,6 +389,21 @@ public sealed partial class MainWindow
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// A plan waiting for its connection's sign-in. One that ticks nothing of its own
+    /// (no prepared run or test selection, or something's ticked already) shows beside
+    /// every site collection: the table would otherwise stay on "Checking sign-in…".
+    /// </summary>
+    private async Task ShowPlanAfterSignInAsync(Plan plan)
+    {
+        var ticksItsOwn = selection.Count == 0 && !PlanCheck.StartsOnAny(plan, []) && (plan.Prepared is not null || plan.HasTestSelection);
+        if (!ticksItsOwn)
+        {
+            await LoadSitesAsync();
+        }
+        await ShowPlanSelectionAsync(plan);
+    }
+
     /// <summary>After signing in: the saved selection waiting for it, or every site collection.</summary>
     private Task ShowSitesOrSavedAsync()
     {
@@ -396,7 +412,7 @@ public sealed partial class MainWindow
             pendingPlan = null;
             pendingPreset = null;
             pendingSaved = null;
-            return ShowPlanSelectionAsync(plan);
+            return ShowPlanAfterSignInAsync(plan);
         }
         if (pendingPreset is { } preset)
         {
