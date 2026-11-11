@@ -19,7 +19,10 @@ public sealed class DelegatedTokenProvider : ITokenProvider
     private readonly SemaphoreSlim gate = new(1, 1);
     /// <summary>The UI thread's context when made by the app: sign-in dialogs open there.</summary>
     private readonly SynchronizationContext? ui = SynchronizationContext.Current;
+    private readonly TokenMemo memo = new();
     private bool cacheReady;
+    /// <summary>The saved account, once looked up: looking it up asks WAM for every account (up to seconds), so once is enough.</summary>
+    private IAccount? savedAccount;
 
     /// <param name="parentWindow">The window WAM's dialogs belong to; null where there's no UI.</param>
     /// <param name="accountChanged">Called after an interactive sign-in, to save the account.</param>
@@ -32,7 +35,8 @@ public sealed class DelegatedTokenProvider : ITokenProvider
             .WithAuthority(AzureCloudInstance.AzurePublic, tenant)
             .WithClientName(AppInfo.Name)
             .WithClientVersion(AppInfo.Version)
-            .WithLogging(Log.Msal, LogLevel.Info, enablePiiLogging: false, enableDefaultPlatformLogging: false);
+            // warnings only: Info writes some 270 lines per sign-in, each a file append on MSAL's path
+            .WithLogging(Log.Msal, LogLevel.Warning, enablePiiLogging: false, enableDefaultPlatformLogging: false);
         builder = profile.UseBrowser
             ? builder.WithRedirectUri("http://localhost")
             : builder.WithBroker(new BrokerOptions(BrokerOptions.OperatingSystems.Windows)
@@ -50,9 +54,18 @@ public sealed class DelegatedTokenProvider : ITokenProvider
     public async Task<string> GetTokenAsync(string resource, bool interactive, CancellationToken cancellationToken = default)
     {
         string[] scopes = [$"{resource.TrimEnd('/')}/.default"];
+        if (memo.Get(resource, DateTimeOffset.UtcNow) is { } kept)
+        {
+            return kept;
+        }
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            // another request may have got it while this one waited
+            if (memo.Get(resource, DateTimeOffset.UtcNow) is { } got)
+            {
+                return got;
+            }
             if (!cacheReady)
             {
                 await MsalCache.RegisterAsync(app.UserTokenCache).ConfigureAwait(false);
@@ -61,21 +74,24 @@ public sealed class DelegatedTokenProvider : ITokenProvider
 
             // each account that may sign in silently, in turn: one Windows won't
             // use (e.g. signed out of the app) doesn't mean the next can't
+            var watch = System.Diagnostics.Stopwatch.StartNew();
             var candidates = await SilentAccountsAsync().ConfigureAwait(false);
+            var lookup = watch.ElapsedMilliseconds;
             var how = profile.UseBrowser ? "browser" : "WAM";
             MsalUiRequiredException? lastFailure = null;
             foreach (var (account, who) in candidates)
             {
+                watch.Restart();
                 try
                 {
                     var silent = await app.AcquireTokenSilent(scopes, account).ExecuteAsync(cancellationToken).ConfigureAwait(false);
-                    Log.Write("auth", $"silent token for {resource} as {who} ({how}): ok, from {silent.AuthenticationResultMetadata.TokenSource}");
-                    Remember(silent.Account);
-                    return silent.AccessToken;
+                    Log.Write("auth", $"silent token for {resource} as {who} ({how}): ok, from {silent.AuthenticationResultMetadata.TokenSource} " +
+                                      $"in {watch.ElapsedMilliseconds} ms (accounts {lookup} ms)");
+                    return Keep(resource, silent);
                 }
                 catch (MsalUiRequiredException e)
                 {
-                    Log.Write("auth", $"silent token for {resource} as {who} ({how}): needs sign-in ({e.ErrorCode}) {FirstLine(e.Message)}");
+                    Log.Write("auth", $"silent token for {resource} as {who} ({how}): needs sign-in ({e.ErrorCode}) in {watch.ElapsedMilliseconds} ms {FirstLine(e.Message)}");
                     lastFailure = e;
                 }
             }
@@ -115,8 +131,7 @@ public sealed class DelegatedTokenProvider : ITokenProvider
                 throw;
             }
             Log.Write("auth", $"interactive sign-in for {resource}: ok, tenant {result.TenantId}, scopes {string.Join(' ', result.Scopes)}");
-            Remember(result.Account);
-            return result.AccessToken;
+            return Keep(resource, result);
         }
         finally
         {
@@ -134,6 +149,8 @@ public sealed class DelegatedTokenProvider : ITokenProvider
                 await MsalCache.RegisterAsync(app.UserTokenCache).ConfigureAwait(false);
                 cacheReady = true;
             }
+            memo.Clear();
+            savedAccount = null;
             // only this connection's account: never every account the app knows
             if (profile.AccountId is not null &&
                 await app.GetAccountAsync(profile.AccountId).ConfigureAwait(false) is { } account)
@@ -155,10 +172,16 @@ public sealed class DelegatedTokenProvider : ITokenProvider
     private async Task<List<(IAccount Account, string Who)>> SilentAccountsAsync()
     {
         var list = new List<(IAccount, string)>();
-        if (!string.IsNullOrEmpty(profile.AccountId) &&
-            await app.GetAccountAsync(profile.AccountId).ConfigureAwait(false) is { } saved)
+        if (!string.IsNullOrEmpty(profile.AccountId))
         {
-            list.Add((saved, "the saved account"));
+            if (savedAccount?.HomeAccountId?.Identifier != profile.AccountId)
+            {
+                savedAccount = await app.GetAccountAsync(profile.AccountId).ConfigureAwait(false);
+            }
+            if (savedAccount is not null)
+            {
+                list.Add((savedAccount, "the saved account"));
+            }
         }
         if (profile.UseWindowsAccount && !profile.UseBrowser)
         {
@@ -190,10 +213,28 @@ public sealed class DelegatedTokenProvider : ITokenProvider
         return done.Task;
     }
 
+    /// <summary>Notes who a token is for and keeps it for the next requests.</summary>
+    private string Keep(string resource, AuthenticationResult result)
+    {
+        Remember(result.Account);
+        memo.Set(resource, result.AccessToken, result.ExpiresOn);
+        return result.AccessToken;
+    }
+
     private void Remember(IAccount? account)
     {
         var id = account?.HomeAccountId?.Identifier;
-        if (id is null || (id == profile.AccountId && account!.Username == profile.AccountName))
+        if (id is null)
+        {
+            return;
+        }
+        if (id != profile.AccountId)
+        {
+            // someone else now: the tokens kept were theirs
+            memo.Clear();
+        }
+        savedAccount = account;
+        if (id == profile.AccountId && account!.Username == profile.AccountName)
         {
             return;
         }

@@ -106,6 +106,26 @@ public sealed class ConnectionTests : IDisposable
     }
 
     [Fact]
+    public void Kept_tokens_are_handed_out_until_shortly_before_they_expire()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var memo = new TokenMemo();
+        Assert.Null(memo.Get("https://contoso.sharepoint.com", now));
+
+        memo.Set("https://contoso.sharepoint.com/", "t1", now.AddHours(1));
+        Assert.Equal("t1", memo.Get("https://CONTOSO.sharepoint.com", now));
+        Assert.Null(memo.Get("https://contoso-admin.sharepoint.com", now));
+        Assert.Equal("t1", memo.Get("https://contoso.sharepoint.com", now.AddHours(1) - TokenMemo.Margin - TimeSpan.FromSeconds(1)));
+        Assert.Null(memo.Get("https://contoso.sharepoint.com", now.AddHours(1) - TokenMemo.Margin));
+        // an expired one is dropped, not kept for later
+        Assert.Null(memo.Get("https://contoso.sharepoint.com", now));
+
+        memo.Set("https://contoso.sharepoint.com", "t2", now.AddHours(1));
+        memo.Clear();
+        Assert.Null(memo.Get("https://contoso.sharepoint.com", now));
+    }
+
+    [Fact]
     public void Thumbprints_are_normalized() =>
         Assert.Equal("AB12CD", Certificates.Normalize(" ab:12 cd‎"));
 
